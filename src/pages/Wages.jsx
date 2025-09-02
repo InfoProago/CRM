@@ -80,7 +80,7 @@ export default function Pay({ recruiters, history }) {
         </div>
         <div className="flex gap-2 items-center">
           {/* removed explicit “Status” label */}
-          <select className="h-10 border rounded-md px-2" value={status} onChange={(e) = style={{background:"black",color:"white"}}> setStatus(e.target.value)}>
+          <select className="h-10 border rounded-md px-2" value={status} onChange={(e) => setStatus(e.target.value)} style={{ background: "black", color: "white" }}>
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
             <option value="all">All</option>
