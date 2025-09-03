@@ -1,10 +1,5 @@
 // src/pages/Inflow.jsx — Proago CRM
-// v2025-09-03 • Inflow: import fix + restore date/time when moving back
-//
-// • Import: supports arrays, results, candidates, data, applications, and single-object { applicant: {...} }.
-// • Stage memory: moving forward resets date/time; moving back restores that stage’s previous values.
-// • Column symmetry: identical colgroup, inputs fill cells (min-w-0 + w-full).
-// • Date/time centered; fixed action slots; compact modals; buttons type="button".
+// v2025-09-03 • Inflow: local-edit cells (fix 1-char + Safari crash), name editable, tighter column locking
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -211,6 +206,29 @@ function shouldShowBell(stage, lead) {
   return false;
 }
 
+// ---- Small local-edit cell that only commits onBlur/Enter (prevents 1-char bug & heavy reflows)
+function EditableCell({ value, onCommit, type = "text", placeholder, inputMode, className = "" }) {
+  const [val, setVal] = useState(value ?? "");
+  // keep local in sync if external changes (moves/import etc.)
+  React.useEffect(() => { setVal(value ?? ""); }, [value]);
+
+  const commit = () => { if (val !== value) onCommit(val); };
+  const onKeyDown = (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); e.currentTarget.blur(); } };
+
+  return (
+    <Input
+      type={type}
+      inputMode={inputMode}
+      className={`w-full ${className}`}
+      placeholder={placeholder}
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={onKeyDown}
+    />
+  );
+}
+
 // ---------- New Lead Dialog ----------
 const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
   const [name, setName] = useState("");
@@ -338,16 +356,13 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       const lead = cur.find((x) => x.id === item.id);
       if (!lead) return;
 
-      // ensure map
       if (!lead._stageMeta) lead._stageMeta = {};
-
       // save from-stage state
       lead._stageMeta[from] = { date: lead.date || "", time: lead.time || "" };
 
       // remove from the source list
       next[from] = cur.filter((x) => x.id !== item.id);
 
-      // decide forward/backward and compute new values
       const forward =
         (from === "leads" && to === "interview") ||
         (from === "interview" && to === "formation");
@@ -357,7 +372,6 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         ? { date: "", time: "" }
         : { date: prior?.date || "", time: prior?.time || "" };
 
-      // push to target
       next[to] = [...next[to], { ...lead, ...incoming }];
     });
 
@@ -411,7 +425,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     calls: Math.min(Math.max(Number(j.calls || 0), 0), 3),
     date: /^\d{4}-\d{2}-\d{2}$/.test(j.date || "") ? j.date : fmtISO(new Date()),
     time: j.time || new Date().toTimeString().slice(0, 5),
-    _stageMeta: {}, // ensure memory exists for imported
+    _stageMeta: {}, // ensure memory for imported
   });
 
   const onImport = async (file) => {
@@ -425,21 +439,14 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       try {
         const js = JSON.parse(txt);
 
-        // CASE A: Already an array
-        if (Array.isArray(js)) {
-          rows = js;
-        }
-        // CASE B: Common array containers
-        else if (Array.isArray(js?.results)) {
-          rows = js.results;
-        } else if (Array.isArray(js?.candidates)) {
-          rows = js.candidates;
-        } else if (Array.isArray(js?.data)) {
-          rows = js.data;
-        } else if (Array.isArray(js?.applications)) {
-          rows = js.applications;
-        }
-        // CASE C: Single-object Indeed export with applicant node
+        // CASE A: array
+        if (Array.isArray(js)) rows = js;
+        // CASE B: common array containers
+        else if (Array.isArray(js?.results)) rows = js.results;
+        else if (Array.isArray(js?.candidates)) rows = js.candidates;
+        else if (Array.isArray(js?.data)) rows = js.data;
+        else if (Array.isArray(js?.applications)) rows = js.applications;
+        // CASE C: single-object with applicant node
         else if (js?.applicant) {
           rows = [{
             name: js.applicant.fullName || js.applicant.name || "",
@@ -458,18 +465,12 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       }
 
       // CSV fallback
-      if (!rows.length && txt.includes(",") && txt.includes("\n")) {
-        rows = parseMaybeCSV(txt);
-      }
+      if (!rows.length && txt.includes(",") && txt.includes("\n")) rows = parseMaybeCSV(txt);
 
-      if (!rows.length) {
-        alert("Could not parse this file. Please upload an Indeed JSON or CSV export.");
-        return;
-      }
+      if (!rows.length) { alert("Could not parse this file. Please upload an Indeed JSON or CSV export."); return; }
 
       const leads = rows
         .map((row) => {
-          // Flexible mapping across many variants
           const name =
             row.name ||
             row.full_name ||
@@ -505,10 +506,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         .filter((j) => j.name && (j.phone || j.email))
         .map(normalizeLead);
 
-      if (!leads.length) {
-        alert("No valid leads found in file (missing name/phone/email).");
-        return;
-      }
+      if (!leads.length) { alert("No valid leads found in file (missing name/phone/email)."); return; }
 
       setPipeline((p) => ({ ...p, leads: [...leads, ...p.leads] }));
       addAuditLog({ area: "Inflow", action: "Import", source: "Indeed", count: leads.length });
@@ -578,86 +576,92 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
 
                 return (
                   <tr key={x.id} className="border-t">
-                    <td className="p-3 font-medium">{titleCase(x.name)}</td>
+                    {/* NAME (editable) */}
+                    <td className="p-3 font-medium min-w-0 overflow-hidden whitespace-nowrap">
+                      <EditableCell
+                        value={x.name}
+                        placeholder="Full name"
+                        onCommit={(val) =>
+                          stableUpdate((p) => {
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, name: val } : it));
+                          })
+                        }
+                      />
+                    </td>
 
-                    {/* Mobile — fill col exactly */}
-                    <td className="p-3 min-w-0">
-                      <Input
-                        className="w-full"
+                    {/* MOBILE */}
+                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                      <EditableCell
                         value={x.phone || ""}
                         placeholder="mobile number"
-                        onChange={(e) =>
+                        onCommit={(val) =>
                           stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, phone: e.target.value } : it));
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, phone: val } : it));
                           })
                         }
                       />
                     </td>
 
-                    {/* Email — fill col exactly */}
-                    <td className="p-3 min-w-0">
-                      <Input
+                    {/* EMAIL */}
+                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                      <EditableCell
                         type="email"
-                        className="w-full"
-                        placeholder="johndoe@gmail.com"
                         value={x.email || ""}
-                        onChange={(e) =>
+                        placeholder="johndoe@gmail.com"
+                        onCommit={(val) =>
                           stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, email: e.target.value } : it));
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, email: val } : it));
                           })
                         }
                       />
                     </td>
 
-                    {/* Source */}
-                    <td className="p-3 text-center">{x.source}</td>
+                    {/* SOURCE (read-only text keeps alignment) */}
+                    <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">{x.source}</td>
 
-                    {/* Date — centered */}
-                    <td className="p-3 min-w-0">
-                      <Input
+                    {/* DATE */}
+                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                      <EditableCell
                         type="date"
-                        className="date-center w-full"
+                        className="date-center"
                         value={x.date || ""}
-                        onChange={(e) =>
+                        onCommit={(val) =>
                           stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, date: e.target.value } : it));
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, date: val } : it));
                           })
                         }
                       />
                     </td>
 
-                    {/* Time — centered */}
-                    <td className="p-3 min-w-0">
-                      <Input
+                    {/* TIME */}
+                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                      <EditableCell
                         type="time"
-                        className="time-center w-full"
+                        className="time-center"
                         value={x.time || ""}
-                        onChange={(e) =>
+                        onCommit={(val) =>
                           stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, time: e.target.value } : it));
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, time: val } : it));
                           })
                         }
                       />
                     </td>
 
-                    {/* Calls — only in Leads, but column exists in all */}
-                    <td className="p-3 text-center">
+                    {/* CALLS — only in Leads (but col space exists everywhere) */}
+                    <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">
                       {showCalls ? (
-                        <div className="w-12 mx-auto">
-                          <Input
-                            inputMode="numeric"
-                            className="text-center w-full"
-                            value={String(x.calls ?? 0)}
-                            onChange={(e) =>
-                              stableUpdate((p) => {
-                                const n = Math.max(0, Math.min(3, Number(String(e.target.value).replace(/\D/g, "")) || 0));
-                                p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, calls: n } : it));
-                              })
-                            }
-                          />
-                        </div>
+                        <EditableCell
+                          inputMode="numeric"
+                          value={String(x.calls ?? 0)}
+                          onCommit={(val) =>
+                            stableUpdate((p) => {
+                              const n = Math.max(0, Math.min(3, Number(String(val).replace(/\D/g, "")) || 0));
+                              p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, calls: n } : it));
+                            })
+                          }
+                        />
                       ) : (
-                        <div className="w-12 mx-auto" />
+                        <div className="h-10" />
                       )}
                     </td>
 
@@ -738,6 +742,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     </Card>
   );
 
+  // --------- Toolbar & layout ----------
   return (
     <div className="grid gap-4">
       <DateCenterStyle />
