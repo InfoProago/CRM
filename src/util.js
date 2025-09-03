@@ -1,9 +1,8 @@
-// util.js — Proago CRM (v2025-09-03b • Step 1 safe update)
-// Adds back legacy exports used by Recruiters.jsx: rankAcr, rankOrderVal,
-// last5ScoresFor, boxPercentsLast8w, toMoney. Keeps new helpers (audit, phone,
-// numbers+commas, averages 2 decimals, DD-MM-YYYY, mult %).
+// util.js — Proago CRM (v2025-09-03c • Step 1 safe update)
+// Restored legacy helpers expected by pages: fmtISO, fmtUK, addDays
+// Kept new: audit log, Lux phone, numbers+commas, averages (2 decimals),
+// DD-MM-YYYY, mult %, defaults (rate bands & conversion), legacy analytics.
 
-// -------------------- Storage keys --------------------
 export const K = {
   settings: "proago_settings_v4",
   pipeline: "proago_pipeline_v4",
@@ -13,7 +12,7 @@ export const K = {
   audit: "proago_audit_v1",
 };
 
-// -------------------- Defaults --------------------
+// -------- Defaults (respect commas) --------
 export const DEFAULT_SETTINGS = {
   projects: ["Hello Fresh"],
   rateBands: [
@@ -21,8 +20,8 @@ export const DEFAULT_SETTINGS = {
     { startISO: "2025-05-01", rate: "15,6285" }, // from 01-05-2025
   ],
   conversionType: {
-    D2D: { noDiscount: { box2: 95, box4: 125 }, discount: { box2: 80, box4: 110 } },
-    EVENT:{ noDiscount: { box2: 60, box4: 70  }, discount: { box2: 45, box4: 55  } },
+    D2D:   { noDiscount: { box2: 95, box4: 125 }, discount: { box2: 80, box4: 110 } },
+    EVENT: { noDiscount: { box2: 60, box4: 70  }, discount: { box2: 45, box4: 55  } },
   },
   notifyTemplates: {
     call: "Hi {name}, thank you for your interest. We’ll be in touch!",
@@ -32,18 +31,22 @@ export const DEFAULT_SETTINGS = {
   notifyFrom: { email: "noreply@proago.com", phone: "+352600000000" },
 };
 
-// -------------------- LocalStorage --------------------
+// -------- LocalStorage helpers --------
 export const load = (k, def) => {
   try { const raw = localStorage.getItem(k); return raw ? JSON.parse(raw) : def; }
   catch { return def; }
 };
 export const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
-// -------------------- Misc helpers --------------------
-export const clone = (x) => (typeof structuredClone === "function" ? structuredClone(x) : JSON.parse(JSON.stringify(x)));
+// -------- Clone / TitleCase --------
+export const clone = (x) =>
+  typeof structuredClone === "function" ? structuredClone(x) : JSON.parse(JSON.stringify(x));
 
-export function titleCase(str) { return (str || "").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()); }
+export function titleCase(str) {
+  return (str || "").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
+// -------- Date helpers (global rule: DD-MM-YYYY) --------
 export function toDDMMYYYY(date) {
   const d = new Date(date);
   const dd = String(d.getDate()).padStart(2, "0");
@@ -52,9 +55,27 @@ export function toDDMMYYYY(date) {
   return `${dd}-${mm}-${yyyy}`;
 }
 
+// Legacy formatters used by Planning.jsx
+export function fmtISO(date) {
+  const d = new Date(date);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+export function fmtUK(date) { // UK style here == DD-MM-YYYY (your project rule)
+  return toDDMMYYYY(date);
+}
+export function addDays(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + Number(n || 0));
+  return d;
+}
+
 // Week helpers (ISO, Monday start)
 export function startOfWeekMon(d) {
-  const dt = new Date(d); const day = dt.getDay(); const diff = dt.getDate() - day + (day === 0 ? -6 : 1);
+  const dt = new Date(d);
+  const day = dt.getDay();
+  const diff = dt.getDate() - day + (day === 0 ? -6 : 1);
   return new Date(dt.setDate(diff));
 }
 export function weekNumberISO(d) {
@@ -65,7 +86,7 @@ export function weekNumberISO(d) {
   return Math.ceil(((date - yearStart) / 86400000 + 1) / 7);
 }
 
-// -------------------- Numbers & money --------------------
+// -------- Numbers & money (digits + commas) --------
 export function sanitizeNumericInput(str) { return (str || "").replace(/[^0-9,]/g, ""); }
 export function parseNumber(str) { if (!str) return 0; return Number(String(str).replace(",", ".")); }
 export function formatNumber(num, decimals = 2) {
@@ -73,8 +94,7 @@ export function formatNumber(num, decimals = 2) {
   if (!isFinite(n)) return (0).toFixed(decimals).replace(".", ",");
   return n.toFixed(decimals).replace(".", ",");
 }
-// Legacy money helper expected by Recruiters/others
-export function toMoney(num) { return formatNumber(num, 2); } // returns "12,34"
+export function toMoney(num) { return formatNumber(num, 2); } // legacy
 
 // Average with 2 decimals (string with comma)
 export function avg(arr) {
@@ -83,10 +103,10 @@ export function avg(arr) {
   return formatNumber(total / arr.length, 2);
 }
 
-// -------------------- Mult (%) --------------------
+// -------- Mult as % --------
 export function formatMult(value) { return `${value ? value : 100}%`; }
 
-// -------------------- Phone (Luxembourg) --------------------
+// -------- Phone (Luxembourg) --------
 export function formatLuxPhone(input) {
   const digitsOnly = String(input || "").replace(/\D/g, "");
   let formatted = "+352";
@@ -102,7 +122,7 @@ export function isValidLuxPhone(input) {
   return d.startsWith("352") && d.length === 12; // +352 + 9 digits
 }
 
-// -------------------- Audit Log --------------------
+// -------- Audit Log --------
 export function addAuditLog(entry) {
   try {
     const logs = load(K.audit, []);
@@ -112,7 +132,7 @@ export function addAuditLog(entry) {
 }
 export function getAuditLog() { return load(K.audit, []); }
 
-// -------------------- Legacy rank helpers (used in Recruiters.jsx) --------------------
+// -------- Legacy rank helpers (used by Recruiters.jsx) --------
 const RANK_ORDER = ["BM", "SM", "TC", "PC", "PR", "RK"];
 export function rankAcr(role) {
   const map = { "Branch Manager":"BM", "Sales Manager":"SM", "Team Captain":"TC",
@@ -125,12 +145,7 @@ export function rankOrderVal(roleOrAcr) {
   return idx >= 0 ? idx : RANK_ORDER.length - 1;
 }
 
-// -------------------- History analytics (safe fallbacks) --------------------
-// We don't assume a strict schema; we look for recent shifts for a recruiter.
-// Supported shapes inside each history item:
-//  - { recruiterId, score, box2, box2d, box4, box4d, at }
-//  - or nested: { team:[{ recruiterId, score, ... }], date }
-//  - or any array of entries with recruiterId/score-like fields.
+// -------- History analytics (safe fallbacks) --------
 function* walkHistory(history) {
   if (!Array.isArray(history)) return;
   for (const item of history) {
@@ -140,25 +155,21 @@ function* walkHistory(history) {
     yield item;
   }
 }
-// Return last 5 numeric scores for a recruiter (array of numbers, newest first)
+// Last 5 scores for recruiter (newest first)
 export function last5ScoresFor(a, b) {
-  // Accept either (history, recruiterId) or (recruiterId, history)
   const history = Array.isArray(a) ? a : b;
   const recruiterId = Array.isArray(a) ? b : a;
   if (!recruiterId || !Array.isArray(history)) return [];
   const scores = [];
   for (const e of walkHistory(history)) {
-    if (!e) continue;
-    const rid = e.recruiterId || e.id || e.rid;
+    const rid = e?.recruiterId || e?.id || e?.rid;
     if (rid !== recruiterId) continue;
     const s = Number(e.score ?? e.total ?? e.SCORE);
     if (isFinite(s)) scores.push({ s, t: new Date(e.at || e.date || Date.now()).getTime() });
   }
-  // newest first
   return scores.sort((A, B) => B.t - A.t).map(x => x.s).slice(0, 5);
 }
-
-// Box 2 / Box 4 percentages over (roughly) last 8 weeks
+// Box2/Box4 % across last ~8 weeks
 export function boxPercentsLast8w(a, b) {
   const history = Array.isArray(a) ? a : b;
   const recruiterId = Array.isArray(a) ? b : a;
