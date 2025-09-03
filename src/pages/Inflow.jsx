@@ -1,10 +1,7 @@
-// src/pages/Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.7)
-// Changes in this patch:
-// • Notify modal: removed To/From lines; keep Language + textarea (centered, compact)
-// • New Lead modal title: "Lead"
-// • Perfect column symmetry via identical <colgroup> and 4 fixed action slots in all sections
-// • Formation: Down button restored; triggers Hire flow (crewcode + onHire), then removes from Formation
-// • Date inputs visually centered (webkit datetime edit CSS helper)
+// src/pages/Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.8)
+// • Align columns across Leads/Interview/Formation (min-w-0 + w-full in input cells).
+// • Persist date/time PER STAGE; restore when moving back.
+// • All buttons type="button" to prevent accidental form submissions/reloads.
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -18,7 +15,7 @@ import * as U from "../util.js";
 
 const { titleCase, clone, fmtISO, addAuditLog, load, K, DEFAULT_SETTINGS } = U;
 
-// --- col widths identical in all sections ---
+// col widths identical everywhere (sum = 100)
 const COLS = [
   { w: "18%" }, // Name
   { w: "18%" }, // Mobile
@@ -35,12 +32,13 @@ const BTN_W = 36, BTN_H = 36;
 const BtnSlot = ({ children }) =>
   children ? children : <span className="inline-block" style={{ width: BTN_W, height: BTN_H }} aria-hidden="true" />;
 
-// inject a tiny style rule once to center native date text
+// center native date text cross-browser
 const DateCenterStyle = () => (
   <style>{`
-    /* Center date text inside native pickers (WebKit/Blink) */
-    input.date-center::-webkit-datetime-edit { text-align: center; }
-    input.date-center { text-align: center; }
+    input.date-center { text-align:center; }
+    input.date-center::-webkit-datetime-edit { text-align:center; }
+    input[type="time"].time-center { text-align:center; }
+    input[type="time"].time-center::-webkit-datetime-edit { text-align:center; }
   `}</style>
 );
 
@@ -240,6 +238,7 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
       calls: Math.min(Math.max(Number(calls || 0), 0), 3),
       date: fmtISO(now),
       time: now.toTimeString().slice(0, 5),
+      _stageMeta: {}, // prepare per-stage memory
     };
     onSave(lead);
     addAuditLog({ area: "Inflow", action: "Add Lead", lead: { id: lead.id, name: lead.name, source: lead.source } });
@@ -306,8 +305,8 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
         </div>
 
         <DialogFooter className="justify-center gap-2 mt-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button style={{ background: "black", color: "white" }} onClick={save}>Save</Button>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button type="button" style={{ background: "black", color: "white" }} onClick={save}>Save</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -328,11 +327,30 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
   const stableUpdate = (updater) =>
     setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
 
+  // Save current stage's date/time before leaving; restore target stage's saved values (if any).
   const move = (item, from, to) => {
-    const reset = to === "interview" || to === "formation";
     stableUpdate((next) => {
-      next[from] = next[from].filter((x) => x.id !== item.id);
-      next[to].push(reset ? { ...item, date: "", time: "" } : { ...item });
+      const curList = next[from];
+      const lead = curList.find((x) => x.id === item.id);
+      if (!lead) return;
+
+      // ensure map
+      if (!lead._stageMeta) lead._stageMeta = {};
+
+      // store from-stage values
+      lead._stageMeta[from] = { date: lead.date || "", time: lead.time || "" };
+
+      // remove from list
+      next[from] = curList.filter((x) => x.id !== item.id);
+
+      // compute to-stage values
+      const prev = lead._stageMeta[to] || null;
+      const goingForward = (from === "leads" && to === "interview") || (from === "interview" && to === "formation");
+      const toVals = goingForward
+        ? { date: "", time: "" }     // forward: start fresh
+        : { date: prev?.date || "", time: prev?.time || "" }; // backward: restore
+
+      next[to] = [...next[to], { ...lead, ...toVals }];
     });
     addAuditLog({ area: "Inflow", action: "Move", from, to, lead: { id: item.id, name: item.name } });
   };
@@ -353,7 +371,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     addAuditLog({ area: "Inflow", action: "Delete Lead", from, lead: { id: item.id, name: item.name } });
   };
 
-  // Importers (JSON/NDJSON/CSV)
+  // Import: JSON / NDJSON / CSV (tolerant)
   const parseMaybeCSV = (txt) => {
     const lines = txt.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     if (lines.length < 2) return [];
@@ -384,6 +402,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     calls: Math.min(Math.max(Number(j.calls || 0), 0), 3),
     date: /^\d{4}-\d{2}-\d{2}$/.test(j.date || "") ? j.date : fmtISO(new Date()),
     time: j.time || new Date().toTimeString().slice(0, 5),
+    _stageMeta: {}, // ensure present for imported ones
   });
 
   const onImport = async (file) => {
@@ -495,9 +514,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                   <tr key={x.id} className="border-t">
                     <td className="p-3 font-medium">{titleCase(x.name)}</td>
 
-                    {/* Mobile */}
-                    <td className="p-3">
+                    {/* Mobile — fill col exactly */}
+                    <td className="p-3 min-w-0">
                       <Input
+                        className="w-full"
                         value={x.phone || ""}
                         placeholder="mobile number"
                         onChange={(e) =>
@@ -508,10 +528,11 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       />
                     </td>
 
-                    {/* Email */}
-                    <td className="p-3">
+                    {/* Email — fill col exactly */}
+                    <td className="p-3 min-w-0">
                       <Input
                         type="email"
+                        className="w-full"
                         placeholder="johndoe@gmail.com"
                         value={x.email || ""}
                         onChange={(e) =>
@@ -525,11 +546,11 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                     {/* Source */}
                     <td className="p-3 text-center">{x.source}</td>
 
-                    {/* Date (centered via class + CSS helper) */}
-                    <td className="p-3">
+                    {/* Date — centered */}
+                    <td className="p-3 min-w-0">
                       <Input
                         type="date"
-                        className="date-center"
+                        className="date-center w-full"
                         value={x.date || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
@@ -539,11 +560,11 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       />
                     </td>
 
-                    {/* Time (centered) */}
-                    <td className="p-3">
+                    {/* Time — centered */}
+                    <td className="p-3 min-w-0">
                       <Input
                         type="time"
-                        className="text-center w-20 pr-2"
+                        className="time-center w-full"
                         value={x.time || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
@@ -553,13 +574,13 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       />
                     </td>
 
-                    {/* Calls — only in Leads */}
+                    {/* Calls — only in Leads, but col exists in all */}
                     <td className="p-3 text-center">
                       {showCalls ? (
-                        <div className="w-10 mx-auto">
+                        <div className="w-12 mx-auto">
                           <Input
                             inputMode="numeric"
-                            className="text-center"
+                            className="text-center w-full"
                             value={String(x.calls ?? 0)}
                             onChange={(e) =>
                               stableUpdate((p) => {
@@ -570,16 +591,17 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                           />
                         </div>
                       ) : (
-                        <div />
+                        <div className="w-12 mx-auto" />
                       )}
                     </td>
 
-                    {/* Actions — Bell • Up • Down • Trash */}
+                    {/* Actions — Bell • Up • Down • Trash (fixed slots) */}
                     <td className="p-3 flex gap-2 justify-end items-center">
                       {/* Bell */}
                       <BtnSlot>
                         {showBell && (
                           <Button
+                            type="button"
                             size="sm"
                             variant="outline"
                             title="Notify"
@@ -596,6 +618,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       <BtnSlot>
                         {prev && (
                           <Button
+                            type="button"
                             size="sm"
                             variant="outline"
                             title="Back"
@@ -608,10 +631,11 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                         )}
                       </BtnSlot>
 
-                      {/* Down (in Formation -> Hire) */}
+                      {/* Down (Formation -> Hire) */}
                       <BtnSlot>
                         {nextKey || enableHireDown ? (
                           <Button
+                            type="button"
                             size="sm"
                             variant="outline"
                             title={enableHireDown ? "Hire" : "Move"}
@@ -627,6 +651,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       {/* Trash */}
                       <BtnSlot>
                         <Button
+                          type="button"
                           size="sm"
                           variant="destructive"
                           className="p-0"
@@ -655,10 +680,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       <div className="flex justify-between items-center">
         <div />
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setAddOpen(true)} style={{ background: "black", color: "white" }}>
+          <Button type="button" variant="outline" onClick={() => setAddOpen(true)} style={{ background: "black", color: "white" }}>
             <Plus className="h-4 w-4 mr-1" /> Add
           </Button>
-          <Button onClick={() => fileRef.current?.click()} style={{ background: "black", color: "white" }}>
+          <Button type="button" onClick={() => fileRef.current?.click()} style={{ background: "black", color: "white" }}>
             <Upload className="h-4 w-4 mr-1" /> Import
           </Button>
           <input
@@ -683,7 +708,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         onSave={(lead) => setPipeline((p) => ({ ...p, leads: [lead, ...p.leads] }))}
       />
 
-      {/* Notify — compact; only Language + Message */}
+      {/* Notify — language + message only (compact) */}
       <Dialog open={notifyOpen} onOpenChange={setNotifyOpen}>
         <DialogContent size="lg">
           <DialogHeader><DialogTitle className="text-center">Notify</DialogTitle></DialogHeader>
@@ -721,8 +746,8 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
           </div>
 
           <DialogFooter className="justify-center gap-2">
-            <Button variant="outline" onClick={() => setNotifyOpen(false)}>Cancel</Button>
-            <Button style={{ background: "black", color: "white" }} onClick={sendNotify}>Send</Button>
+            <Button type="button" variant="outline" onClick={() => setNotifyOpen(false)}>Cancel</Button>
+            <Button type="button" style={{ background: "black", color: "white" }} onClick={sendNotify}>Send</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
