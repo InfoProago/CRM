@@ -1,129 +1,158 @@
-// util.js — Proago CRM (v2025-08-29g final)
-// Shared helpers, storage, formatting, defaults.
-// IMPORTANT: explicitly named-exports formatPhoneByCountry.
+// util.js — Proago CRM (v2025-09-03 • Step 1 update: Settings & Util)
+// • Added Lux phone validation & formatting (+352 691 999 999, 9 digits only)
+// • Numbers: accept digits + commas only
+// • Averages always with 2 decimals
+// • Audit Log system
+// • Helpers for DD-MM-YYYY dates, % mult display
 
+// -------------------- Storage --------------------
 export const K = {
-  settings: "proago_settings_v1",
-  pipeline: "proago_pipeline_v1",
-  recruiters: "proago_recruiters_v1",
-  planning: "proago_planning_v1",
-  history: "proago_history_v1",
+  settings: "proago_settings_v4",
+  pipeline: "proago_pipeline_v4",
+  recruiters: "proago_recruiters_v4",
+  planning: "proago_planning_v4",
+  history: "proago_history_v4",
+  audit: "proago_audit_v1",
 };
 
 export const DEFAULT_SETTINGS = {
   projects: ["Hello Fresh"],
-  rateBands: [{ startISO: "2025-01-01", rate: 15 }],
+  rateBands: [
+    { startISO: "2025-01-01", rate: "15,2473" }, // before 01-05-2025
+    { startISO: "2025-05-01", rate: "15,6285" }, // from 01-05-2025
+  ],
   conversionType: {
-    D2D:  { noDiscount: { box2: 50, box4: 90 }, discount: { box2: 35, box4: 70 } },
-    EVENT:{ noDiscount: { box2: 40, box4: 80 }, discount: { box2: 30, box4: 60 } },
+    D2D: {
+      noDiscount: { box2: 95, box4: 125 },
+      discount: { box2: 80, box4: 110 },
+    },
+    EVENT: {
+      noDiscount: { box2: 60, box4: 70 },
+      discount: { box2: 45, box4: 55 },
+    },
   },
+  notifyTemplates: {
+    call: "Hi {name}, thank you for your interest. We’ll be in touch!",
+    interview: "Hi {name}, your interview is set for {date} at {time}.",
+    formation: "Hi {name}, your formation starts on {date} at {time}.",
+  },
+  notifyFrom: { email: "noreply@proago.com", phone: "+352600000000" },
 };
 
-// ---------- Storage ----------
-export const load = (k, fallback) => {
-  try { const v = localStorage.getItem(typeof k === "string" ? k : K[k]); return v ? JSON.parse(v) : fallback; }
-  catch { return fallback; }
-};
-export const save = (k, v) => { try { localStorage.setItem(typeof k === "string" ? k : K[k], JSON.stringify(v)); } catch {} };
-
-export const clone = (x) => JSON.parse(JSON.stringify(x ?? null));
-
-// ---------- Formatting ----------
-export const titleCase = (s) =>
-  String(s || "")
-    .toLowerCase()
-    .replace(/\b([a-zà-ÿ])/g, (m) => m.toUpperCase());
-
-export const toMoney = (n) => Number(n || 0).toFixed(2);
-
-// ---------- Dates ----------
-export const fmtISO = (d) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-};
-export const fmtUK = (iso) => (iso ? `${iso.slice(8,10)}/${iso.slice(5,7)}/${iso.slice(2,4)}` : "");
-export const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
-export const startOfWeekMon = (d) => {
-  const x = new Date(d);
-  const day = (x.getDay() + 6) % 7; // Mon=0..Sun=6
-  x.setDate(x.getDate() - day);
-  x.setHours(0,0,0,0);
-  return x;
-};
-export const weekNumberISO = (d) => {
-  const date = new Date(d); date.setHours(0,0,0,0);
-  date.setDate(date.getDate() + 3 - ((date.getDay() + 6) % 7));
-  const week1 = new Date(date.getFullYear(), 0, 4);
-  return 1 + Math.round(((date.getTime() - week1.getTime()) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7);
-};
-export const monthKey = (iso) => (iso || "").slice(0, 7);
-export const monthLabel = (ym) => {
-  const [y, m] = ym.split("-").map(Number);
-  const d = new Date(Date.UTC(y, (m || 1) - 1, 1));
-  return d.toLocaleString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
+// -------------------- LocalStorage helpers --------------------
+export const load = (k, def) => {
+  try {
+    const raw = localStorage.getItem(k);
+    if (!raw) return def;
+    return JSON.parse(raw);
+  } catch {
+    return def;
+  }
 };
 
-// ---------- Rates ----------
-export const rateForDate = (settings, iso) => {
-  const bands = (settings?.rateBands || DEFAULT_SETTINGS.rateBands).slice().sort((a,b)=> a.startISO.localeCompare(b.startISO));
-  const target = iso || fmtISO(new Date());
-  let rate = bands[0]?.rate ?? 15;
-  for (const b of bands) if (b.startISO <= target) rate = b.rate;
-  return rate;
+export const save = (k, val) => {
+  try {
+    localStorage.setItem(k, JSON.stringify(val));
+  } catch {}
 };
 
-// ---------- Phones (Lux/FR/BE/DE) ----------
-// Named export to satisfy Rollup.
-export function formatPhoneByCountry(raw) {
-  const clean = String(raw || "").replace(/\s+/g, "");
-  if (!clean.startsWith("+")) return { ok: false, display: "" };
+// -------------------- Clone helper --------------------
+export const clone = (x) => structuredClone ? structuredClone(x) : JSON.parse(JSON.stringify(x));
 
-  const prefixes = [
-    { cc: "+352", min: 6, max: 12 }, // Luxembourg
-    { cc: "+33",  min: 6, max: 12 }, // France
-    { cc: "+32",  min: 6, max: 12 }, // Belgium
-    { cc: "+49",  min: 6, max: 13 }, // Germany
-  ];
-  const p = prefixes.find((p) => clean.startsWith(p.cc));
-  if (!p) return { ok: false, display: "" };
-
-  const rest = clean.slice(p.cc.length).replace(/\D+/g, "");
-  if (rest.length < p.min || rest.length > p.max) return { ok: false, display: "" };
-
-  return { ok: true, display: `${p.cc} ${rest}` };
+// -------------------- Phone helpers --------------------
+export function formatLuxPhone(input) {
+  // Keep only digits
+  const digits = input.replace(/\D/g, "");
+  // Must start with +352
+  if (!digits.startsWith("352")) return "+352 ";
+  // Ensure +352 + 9 digits
+  const body = digits.slice(3, 12);
+  let formatted = "+352 ";
+  if (body.length > 0) formatted += body.slice(0, 3);
+  if (body.length > 3) formatted += " " + body.slice(3, 6);
+  if (body.length > 6) formatted += " " + body.slice(6, 9);
+  return formatted.trim();
 }
 
-// ---------- Ranks ----------
-export const rankAcr = (role) => {
-  const m = { Rookie: "RK", Promoter: "PR", "Pool Captain": "PC", "Team Captain": "TC", "Sales Manager": "SM", "Branch Manager": "BM" };
-  return m[role] || "RK";
-};
-export const rankOrderVal = (acr) => {
-  const order = { BM: 6, SM: 5, TC: 4, PC: 3, PR: 2, RK: 1 };
-  return order[acr] ?? 0;
-};
+export function isValidLuxPhone(input) {
+  const digits = input.replace(/\D/g, "");
+  // +352 + 9 digits = total length 12
+  return digits.startsWith("352") && digits.length === 12;
+}
 
-// ---------- Score & Box stats ----------
-export const last5ScoresFor = (history, recruiterId) =>
-  history
-    .filter(h => h.recruiterId === recruiterId && h.score != null)
-    .sort((a,b) => (a.dateISO < b.dateISO ? 1 : -1))
-    .slice(0,5)
-    .map(h => Number(h.score) || 0);
+// -------------------- Numeric helpers --------------------
+export function parseNumber(str) {
+  if (!str) return 0;
+  return Number(str.replace(",", "."));
+}
 
-export const boxPercentsLast8w = (history, recruiterId) => {
-  const now = new Date();
-  const eightWeeksAgo = addDays(now, -56);
-  const rows = history.filter(h => h.recruiterId === recruiterId && new Date(h.dateISO || h.date) >= eightWeeksAgo);
-  let b2 = 0, b4 = 0, s = 0;
-  rows.forEach(r => {
-    const score = Number(r.score) || 0;
-    const b2x = (Number(r.box2_noDisc)||0) + (Number(r.box2_disc)||0);
-    const b4x = (Number(r.box4_noDisc)||0) + (Number(r.box4_disc)||0);
-    b2 += b2x; b4 += b4x; s += score;
-  });
-  const pct = (num, den) => den > 0 ? (num / den) * 100 : 0;
-  return { b2: pct(b2, s), b4: pct(b4, s) };
-};
+export function formatNumber(num, decimals = 2) {
+  if (num === null || num === undefined || isNaN(num)) return "0,00";
+  return num.toFixed(decimals).replace(".", ",");
+}
+
+// Only allow digits and commas in inputs
+export function sanitizeNumericInput(str) {
+  return str.replace(/[^0-9,]/g, "");
+}
+
+// -------------------- Average helper --------------------
+export function avg(arr) {
+  if (!arr || arr.length === 0) return "0,00";
+  const n = arr.reduce((a, b) => a + (Number(b) || 0), 0) / arr.length;
+  return formatNumber(n, 2);
+}
+
+// -------------------- Date helpers --------------------
+export function toDDMMYYYY(date) {
+  const d = new Date(date);
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${dd}-${mm}-${yyyy}`;
+}
+
+// -------------------- Mult % helper --------------------
+export function formatMult(value) {
+  if (!value) return "100%";
+  return `${value}%`;
+}
+
+// -------------------- TitleCase --------------------
+export function titleCase(str) {
+  return (str || "").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// -------------------- Week helpers --------------------
+export function startOfWeekMon(d) {
+  const date = new Date(d);
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+  return new Date(date.setDate(diff));
+}
+
+export function weekNumberISO(d) {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  return Math.ceil(((date - yearStart) / 86400000 + 1) / 7);
+}
+
+// -------------------- Audit Log --------------------
+export function addAuditLog(entry) {
+  try {
+    const logs = load(K.audit, []);
+    logs.push({
+      ...entry,
+      at: new Date().toISOString(),
+    });
+    save(K.audit, logs);
+  } catch (e) {
+    console.error("Audit log failed", e);
+  }
+}
+
+export function getAuditLog() {
+  return load(K.audit, []);
+}
