@@ -1,8 +1,9 @@
-// Proago CRM — App.jsx (v2025-08-29e)
-// Changes in this drop:
-// • Fonts: Inject Nunito globally; main nav buttons + Settings (right) + Logout use Lora
-// • Header: Remove Settings from middle nav; keep only right-side Settings (white bg, black text)
-// • Finances: requires re-login each time (separate FinancesLogin gate)
+// Proago CRM — App.jsx (v2025-09-03 • Step 1 safe)
+// Notes:
+// • Nunito + Lora font injection kept
+// • Right-side Settings (white/black); removed middle-nav Settings
+// • Finances has re-login gate
+// • Passes { settings, setSettings } to Settings (Audit Log lives inside Settings)
 
 import React, { useEffect, useMemo, useState } from "react";
 import { Button } from "./components/ui/button";
@@ -126,7 +127,7 @@ const Shell = ({ tab, setTab, children, weekBadge, onLogout, onOpenSettings }) =
             className="h-7 w-7 rounded-full"
             onError={(e) => (e.currentTarget.style.display = "none")}
           />
-          {/* Header title stays Lora (per your rule for main buttons area) */}
+          {/* Header title stays Lora */}
           <span className="font-semibold text-lg whitespace-nowrap" style={{ fontFamily: "Lora,serif" }}>
             Proago CRM
           </span>
@@ -243,7 +244,6 @@ export default function App() {
         <Settings
           settings={settings}
           setSettings={setSettings}
-          onClearPlanningHistory={() => setHistory([])}
         />
       ) : (
         <>
