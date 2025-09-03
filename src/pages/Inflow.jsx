@@ -1,7 +1,10 @@
-// src/pages/Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.8)
-// • Align columns across Leads/Interview/Formation (min-w-0 + w-full in input cells).
-// • Persist date/time PER STAGE; restore when moving back.
-// • All buttons type="button" to prevent accidental form submissions/reloads.
+// src/pages/Inflow.jsx — Proago CRM
+// v2025-09-03 • Inflow: import fix + restore date/time when moving back
+//
+// • Import: supports arrays, results, candidates, data, applications, and single-object { applicant: {...} }.
+// • Stage memory: moving forward resets date/time; moving back restores that stage’s previous values.
+// • Column symmetry: identical colgroup, inputs fill cells (min-w-0 + w-full).
+// • Date/time centered; fixed action slots; compact modals; buttons type="button".
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -15,7 +18,7 @@ import * as U from "../util.js";
 
 const { titleCase, clone, fmtISO, addAuditLog, load, K, DEFAULT_SETTINGS } = U;
 
-// col widths identical everywhere (sum = 100)
+// --- col widths identical in all sections (sum = 100%) ---
 const COLS = [
   { w: "18%" }, // Name
   { w: "18%" }, // Mobile
@@ -32,7 +35,7 @@ const BTN_W = 36, BTN_H = 36;
 const BtnSlot = ({ children }) =>
   children ? children : <span className="inline-block" style={{ width: BTN_W, height: BTN_H }} aria-hidden="true" />;
 
-// center native date text cross-browser
+// center native date/time text cross-browser
 const DateCenterStyle = () => (
   <style>{`
     input.date-center { text-align:center; }
@@ -238,7 +241,7 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
       calls: Math.min(Math.max(Number(calls || 0), 0), 3),
       date: fmtISO(now),
       time: now.toTimeString().slice(0, 5),
-      _stageMeta: {}, // prepare per-stage memory
+      _stageMeta: {}, // per-stage memory
     };
     onSave(lead);
     addAuditLog({ area: "Inflow", action: "Add Lead", lead: { id: lead.id, name: lead.name, source: lead.source } });
@@ -327,31 +330,37 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
   const stableUpdate = (updater) =>
     setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
 
-  // Save current stage's date/time before leaving; restore target stage's saved values (if any).
+  // ---------- Stage move with memory ----------
+  // Forward: reset; Backward: restore previous values for the target stage.
   const move = (item, from, to) => {
     stableUpdate((next) => {
-      const curList = next[from];
-      const lead = curList.find((x) => x.id === item.id);
+      const cur = next[from];
+      const lead = cur.find((x) => x.id === item.id);
       if (!lead) return;
 
       // ensure map
       if (!lead._stageMeta) lead._stageMeta = {};
 
-      // store from-stage values
+      // save from-stage state
       lead._stageMeta[from] = { date: lead.date || "", time: lead.time || "" };
 
-      // remove from list
-      next[from] = curList.filter((x) => x.id !== item.id);
+      // remove from the source list
+      next[from] = cur.filter((x) => x.id !== item.id);
 
-      // compute to-stage values
-      const prev = lead._stageMeta[to] || null;
-      const goingForward = (from === "leads" && to === "interview") || (from === "interview" && to === "formation");
-      const toVals = goingForward
-        ? { date: "", time: "" }     // forward: start fresh
-        : { date: prev?.date || "", time: prev?.time || "" }; // backward: restore
+      // decide forward/backward and compute new values
+      const forward =
+        (from === "leads" && to === "interview") ||
+        (from === "interview" && to === "formation");
 
-      next[to] = [...next[to], { ...lead, ...toVals }];
+      const prior = lead._stageMeta[to];
+      const incoming = forward
+        ? { date: "", time: "" }
+        : { date: prior?.date || "", time: prior?.time || "" };
+
+      // push to target
+      next[to] = [...next[to], { ...lead, ...incoming }];
     });
+
     addAuditLog({ area: "Inflow", action: "Move", from, to, lead: { id: item.id, name: item.name } });
   };
 
@@ -371,7 +380,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     addAuditLog({ area: "Inflow", action: "Delete Lead", from, lead: { id: item.id, name: item.name } });
   };
 
-  // Import: JSON / NDJSON / CSV (tolerant)
+  // ---------- Importers (JSON/NDJSON/CSV) ----------
   const parseMaybeCSV = (txt) => {
     const lines = txt.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     if (lines.length < 2) return [];
@@ -402,58 +411,115 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     calls: Math.min(Math.max(Number(j.calls || 0), 0), 3),
     date: /^\d{4}-\d{2}-\d{2}$/.test(j.date || "") ? j.date : fmtISO(new Date()),
     time: j.time || new Date().toTimeString().slice(0, 5),
-    _stageMeta: {}, // ensure present for imported ones
+    _stageMeta: {}, // ensure memory exists for imported
   });
 
   const onImport = async (file) => {
     if (!file) return;
     try {
       let txt = await file.text();
-      txt = txt.replace(/^\uFEFF/, "");
+      txt = txt.replace(/^\uFEFF/, ""); // strip BOM
       let rows = [];
 
+      // Try JSON object/array first
       try {
         const js = JSON.parse(txt);
-        if (Array.isArray(js)) rows = js;
-        else if (Array.isArray(js?.results)) rows = js.results;
-        else if (Array.isArray(js?.candidates)) rows = js.candidates;
-        else if (Array.isArray(js?.data)) rows = js.data;
+
+        // CASE A: Already an array
+        if (Array.isArray(js)) {
+          rows = js;
+        }
+        // CASE B: Common array containers
+        else if (Array.isArray(js?.results)) {
+          rows = js.results;
+        } else if (Array.isArray(js?.candidates)) {
+          rows = js.candidates;
+        } else if (Array.isArray(js?.data)) {
+          rows = js.data;
+        } else if (Array.isArray(js?.applications)) {
+          rows = js.applications;
+        }
+        // CASE C: Single-object Indeed export with applicant node
+        else if (js?.applicant) {
+          rows = [{
+            name: js.applicant.fullName || js.applicant.name || "",
+            email: js.applicant.email || js.applicant.mail || "",
+            phone: js.applicant.phoneNumber || js.applicant.phone || js.applicant.mobile || "",
+            source: "Indeed",
+            date: "", time: "",
+          }];
+        }
       } catch {
-        const lines = txt.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-        const nd = [];
-        for (const line of lines) { try { nd.push(JSON.parse(line)); } catch {} }
-        if (nd.length) rows = nd;
+        // Not standard JSON → try NDJSON
+        rows = txt
+          .split(/\r?\n/)
+          .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+          .filter(Boolean);
       }
 
-      if (!rows.length && txt.includes(",") && txt.includes("\n")) rows = parseMaybeCSV(txt);
-      if (!rows.length) { alert("Could not parse this file. Please upload an Indeed JSON/CSV export."); return; }
+      // CSV fallback
+      if (!rows.length && txt.includes(",") && txt.includes("\n")) {
+        rows = parseMaybeCSV(txt);
+      }
+
+      if (!rows.length) {
+        alert("Could not parse this file. Please upload an Indeed JSON or CSV export.");
+        return;
+      }
 
       const leads = rows
         .map((row) => {
-          const name = row.name || row.full_name || row.candidate || `${row.first_name || ""} ${row.last_name || ""}`.trim();
-          const phone = row.phone || row.phone_number || row.mobile || row.contact?.phone || "";
-          const email = row.email || row.mail || row.contact?.email || "";
-          const source = row.source || row.platform || row.channel || "Indeed";
+          // Flexible mapping across many variants
+          const name =
+            row.name ||
+            row.full_name ||
+            row.candidate ||
+            `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
+            row.applicant?.fullName ||
+            "";
+
+          const phone =
+            row.phone ||
+            row.phone_number ||
+            row.mobile ||
+            row.contact?.phone ||
+            row.contact?.phones?.[0] ||
+            row.applicant?.phoneNumber ||
+            "";
+
+          const email =
+            row.email ||
+            row.mail ||
+            row.contact?.email ||
+            row.contact?.emails?.[0] ||
+            row.applicant?.email ||
+            "";
+
+          const source = row.source || row.platform || "Indeed";
           const calls = row.calls ?? 0;
           const date = row.date || row.applied_at || row.created_at || row.timestamp || "";
           const time = row.time || "";
+
           return { name, phone, email, source, calls, date, time };
         })
         .filter((j) => j.name && (j.phone || j.email))
         .map(normalizeLead);
 
-      if (!leads.length) { alert("No valid leads found in file."); return; }
+      if (!leads.length) {
+        alert("No valid leads found in file (missing name/phone/email).");
+        return;
+      }
 
       setPipeline((p) => ({ ...p, leads: [...leads, ...p.leads] }));
       addAuditLog({ area: "Inflow", action: "Import", source: "Indeed", count: leads.length });
       alert(`Imported ${leads.length} lead(s).`);
     } catch (e) {
-      console.error(e);
+      console.error("Import error:", e);
       alert("Import failed. Please use an Indeed JSON or CSV export.");
     }
   };
 
-  // Notify
+  // ---------- Notify ----------
   const openNotify = (lead, stage) => {
     const base = TPL[stage === "interview" ? "interview" : stage === "formation" ? "formation" : "call"];
     setNotifyText(compileTemplate(base[notifyLang], lead));
@@ -480,7 +546,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     setNotifyStage(null);
   };
 
-  // Section renderer
+  // ---------- Section renderer ----------
   const Section = ({ title, keyName, prev, nextKey, showCalls, enableHireDown }) => (
     <Card className="border-2">
       <CardHeader>
@@ -574,7 +640,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       />
                     </td>
 
-                    {/* Calls — only in Leads, but col exists in all */}
+                    {/* Calls — only in Leads, but column exists in all */}
                     <td className="p-3 text-center">
                       {showCalls ? (
                         <div className="w-12 mx-auto">
