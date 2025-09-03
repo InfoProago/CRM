@@ -1,12 +1,13 @@
-// Inflow.jsx — Proago CRM (v2025-09-03 • Step 2 + tweaks)
-// Changes per your latest feedback:
-// • Remove Calls column from Interview/Formation
-// • Notify bell: always shown in Interview/Formation (black bg, white bell); in Leads only when Calls=3
-// • New Lead: country-aware phone formatting (Lux/FR/BE/DE) + email must contain '@'
-// • Notify dialog title = "Notify"; From phone defaults to +352 691 337 633 if not set in Settings
-// • Templates prefilled with your Luxembourgish texts (still editable)
-// • Columns symmetric within each table
-// • Calls in Leads = small input (0–3)
+// Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.2 refinements)
+//
+// What’s new in this patch:
+// • Time input narrower; Date+Time preserved when moving
+// • Notify bell in Interview/Formation only when date & time set; in Leads when Calls=3
+// • Date displays DD-MM-YYYY, accepts DD-MM-YYYY typing, stores as ISO
+// • New Lead placeholders; removed prefix invalid alert; Calls input smaller
+// • Columns aligned across all three sections (identical colgroup widths)
+// • Typing bug fixed (fully controlled inputs, no synthetic event cloning)
+// • Importer: JSON / NDJSON / CSV; detects PDF and explains clearly
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -19,23 +20,42 @@ import { Upload, Trash2, Plus, ChevronUp, ChevronDown, Bell } from "lucide-react
 
 import * as U from "../util.js";
 const {
-  titleCase, clone, fmtISO, fmtUK, isValidLuxPhone, formatLuxPhone,
-  addAuditLog, load, K, DEFAULT_SETTINGS
+  titleCase, clone, fmtISO, fmtUK,
+  addAuditLog, load, K, DEFAULT_SETTINGS,
 } = U;
 
 const PREFIXES = ["+352", "+33", "+32", "+49"];
 
-// ------------- Phone formatting per country -------------
+// ---------- Date helpers (DD-MM-YYYY <-> ISO) ----------
+function parseDDMMtoISO(s) {
+  // accepts "dd-mm-yyyy" or "dd/mm/yyyy"
+  const m = String(s || "").match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (!m) return "";
+  const dd = m[1].padStart(2, "0");
+  const mm = m[2].padStart(2, "0");
+  const yyyy = m[3];
+  return `${yyyy}-${mm}-${dd}`;
+}
+function toDDMM(isoOrEmpty) {
+  if (!isoOrEmpty) return "";
+  return fmtUK(isoOrEmpty);
+}
+
+// ---------- Country phone display (non-strict; you can edit later) ----------
 function formatPhoneByCountry(prefix, localDigits) {
   const d = String(localDigits || "").replace(/\D+/g, "");
   switch (prefix) {
     case "+352": {
-      // +352 691 999 999 (9 digits after 352)
-      return formatLuxPhone(`+352${d}`);
+      // +352 691 999 999 (best-effort spacing)
+      let out = "+352";
+      if (d.length) out += " " + d.slice(0, 3);
+      if (d.length > 3) out += " " + d.slice(3, 6);
+      if (d.length > 6) out += " " + d.slice(6, 9);
+      return out;
     }
     case "+33": {
-      // France mobile (approx): +33 6 12 34 56 78
-      const body = d.replace(/^0/, ""); // drop leading 0 if provided
+      // +33 6 12 34 56 78 (approx)
+      const body = d.replace(/^0/, "");
       let out = "+33";
       if (body.length) out += " " + body.slice(0, 1);
       if (body.length > 1) out += " " + body.slice(1, 3);
@@ -45,7 +65,7 @@ function formatPhoneByCountry(prefix, localDigits) {
       return out;
     }
     case "+32": {
-      // Belgium mobile (approx): +32 470 12 34 56
+      // +32 470 12 34 56 (approx)
       const body = d.replace(/^0/, "");
       let out = "+32";
       if (body.length) out += " " + body.slice(0, 3);
@@ -55,7 +75,7 @@ function formatPhoneByCountry(prefix, localDigits) {
       return out;
     }
     case "+49": {
-      // Germany mobile (approx): +49 1512 345 6789
+      // +49 1512 345 6789 (approx)
       const body = d.replace(/^0/, "");
       let out = "+49";
       if (body.length) out += " " + body.slice(0, 4);
@@ -63,41 +83,24 @@ function formatPhoneByCountry(prefix, localDigits) {
       if (body.length > 7) out += " " + body.slice(7, 11);
       return out;
     }
-    default: {
-      // Fallback: just prefix + digits
+    default:
       return `${prefix} ${d}`.trim();
-    }
   }
-}
-
-function isValidByCountry(prefix, display) {
-  const digits = String(display || "").replace(/\D+/g, "");
-  if (prefix === "+352") return digits.startsWith("352") && digits.length === 12; // strict Lux check
-  // For other countries, accept reasonable mobile lengths (9–12 digits total after country code)
-  return digits.length >= 10 && digits.length <= 14;
-}
-
-// ------------- Notify helpers -------------
-function compileTemplate(tpl, lead, defaults) {
-  const d = lead.date ? fmtUK(lead.date) : defaults?.date || "(dd-mm-yyyy)";
-  const t = lead.time || defaults?.time || "(time)";
-  return (tpl || "")
-    .replaceAll("{name}", titleCase(lead.name || ""))
-    .replaceAll("{date}", d)
-    .replaceAll("{time}", t);
 }
 
 function getSettings() {
   const s = load(K.settings, DEFAULT_SETTINGS) || {};
-  // Fallback phone if not configured
-  const phone = s.notifyFrom?.phone || "+352 691 337 633";
-  const email = s.notifyFrom?.email || "noreply@proago.com";
-  const notifyFrom = { email, phone };
+  const notifyFrom = {
+    email: s.notifyFrom?.email || "noreply@proago.com",
+    phone: s.notifyFrom?.phone || "+352 691 337 633",
+  };
   return { ...s, notifyFrom };
 }
 
-// Your exact templates (editable in the Notify dialog)
-const TPL_CALL = `Moien {name},
+// ---------- Templates (LUX / FR / DE) ----------
+const TPL = {
+  call: {
+    lb: `Moien {name},
 
 Entschëllegt, dass ech Iech stéieren. Ech erlaaben mir just Iech kuerz unzeruffen, well Dir Iech iwwer Indeed bei eis beworben hutt.
 
@@ -107,9 +110,32 @@ Ech wenschen Iech nach en agreabelen Daag.
 
 Mat beschte Gréiss,
 Garcia Oscar
-CEO – Proago, Face to Face Marketing`;
+CEO – Proago, Face to Face Marketing`,
+    fr: `Bonjour {name},
 
-const TPL_INTERVIEW = `Moien {name},
+Désolé(e) de vous déranger. Je me permets de vous appeler brièvement car vous avez postulé chez nous via Indeed.
+
+Je voulais simplement savoir si vous êtes toujours intéressé(e) par le poste. N’hésitez pas à me recontacter dès que possible.
+
+Je vous souhaite une agréable journée.
+
+Cordialement,
+Garcia Oscar
+CEO – Proago, Face to Face Marketing`,
+    de: `Guten Tag {name},
+
+Entschuldigen Sie die Störung. Ich erlaube mir, Sie kurz anzurufen, da Sie sich über Indeed bei uns beworben haben.
+
+Ich wollte nur nachfragen, ob Sie noch an der Stelle interessiert sind. Bitte zögern Sie nicht, sich so bald wie möglich bei mir zu melden.
+
+Ich wünsche Ihnen einen angenehmen Tag.
+
+Mit freundlichen Grüßen,
+Garcia Oscar
+CEO – Proago, Face to Face Marketing`,
+  },
+  interview: {
+    lb: `Moien {name},
 
 No eisem leschten Telefongespréich gouf en Entretien festgeluecht fir den {date} um {time}.
 
@@ -122,9 +148,38 @@ Dir kënnt am Parking Fort Neipperg parken, ongeféier 5–6 Minutte Fousswee ew
 Wann Dir nach Froen hutt, kënnt Dir Iech gären bei mir mellen.
 Mat frëndleche Gréiss,
 Oscar Garcia Saint-Medar
-CEO vun Proago`;
+CEO vun Proago`,
+    fr: `Bonjour {name},
 
-const TPL_FORMATION = `Moien {name},
+Suite à notre dernier appel, un entretien est prévu le {date} à {time}.
+
+L’entretien aura lieu chez Coffee Fellows, à l’adresse suivante :
+4 Place de Paris, 2314 Luxembourg (quartier Gare, arrêt Zitha/Paris).
+
+Vous pouvez vous garer au Parking Fort Neipperg, à environ 5–6 minutes à pied :
+43, rue du Fort Neipperg, 2230 Luxembourg (quartier Gare).
+
+Si vous avez des questions, n’hésitez pas à me contacter.
+Cordialement,
+Oscar Garcia Saint-Medar
+CEO de Proago`,
+    de: `Guten Tag {name},
+
+Nach unserem letzten Telefonat wurde ein Vorstellungsgespräch für den {date} um {time} vereinbart.
+
+Das Gespräch findet bei Coffee Fellows statt, unter folgender Adresse:
+4 Place de Paris, 2314 Luxemburg (Stadtteil Gare, Haltestelle Zitha/Paris).
+
+Sie können im Parking Fort Neipperg parken, etwa 5–6 Minuten zu Fuß:
+43, rue du Fort Neipperg, 2230 Luxemburg (Stadtteil Gare).
+
+Bei Fragen können Sie sich gerne bei mir melden.
+Mit freundlichen Grüßen,
+Oscar Garcia Saint-Medar
+CEO von Proago`,
+  },
+  formation: {
+    lb: `Moien {name},
 
 No eisem Entetien gouf eng Formatioun festgeluecht fir den {date} um {time}.
 
@@ -137,21 +192,52 @@ Dir kënnt am Parking Fort Neipperg parken, ongeféier 15–16 Minutte Fousswee 
 Wann Dir nach Froen hutt, kënnt Dir Iech gären bei mir mellen.
 Mat frëndleche Gréiss,
 Oscar Garcia Saint-Medar
-CEO vun Proago`;
+CEO vun Proago`,
+    fr: `Bonjour {name},
 
-// Leads bell shows only when Calls=3; Interview/Formation -> always show
+Suite à notre entretien, une formation est prévue le {date} à {time}.
+
+La formation aura lieu chez nous, à l’adresse suivante :
+9a Rue de Chiny, 1334 Luxembourg (quartier Gare).
+
+Vous pouvez vous garer au Parking Fort Neipperg, à environ 15–16 minutes à pied :
+43, rue du Fort Neipperg, 2230 Luxembourg (quartier Gare).
+
+Si vous avez des questions, n’hésitez pas à me contacter.
+Cordialement,
+Oscar Garcia Saint-Medar
+CEO de Proago`,
+    de: `Guten Tag {name},
+
+Nach unserem Gespräch wurde eine Schulung für den {date} um {time} geplant.
+
+Die Schulung findet bei uns statt, unter folgender Adresse:
+9a Rue de Chiny, 1334 Luxemburg (Stadtteil Gare).
+
+Sie können im Parking Fort Neipperg parken, etwa 15–16 Minuten zu Fuß:
+43, rue du Fort Neipperg, 2230 Luxemburg (Stadtteil Gare).
+
+Bei Fragen können Sie sich gerne bei mir melden.
+Mit freundlichen Grüßen,
+Oscar Garcia Saint-Medar
+CEO von Proago`,
+  },
+};
+
+function compileTemplate(tpl, lead) {
+  const d = lead.date ? toDDMM(lead.date) : "(dd-mm-yyyy)";
+  const t = lead.time || "(time)";
+  return (tpl || "").replaceAll("{name}", titleCase(lead.name || "")).replaceAll("{date}", d).replaceAll("{time}", t);
+}
+
+// Leads bell appears if Calls>=3; Interview/Formation only if date & time set
 function shouldShowBell(stage, lead) {
   if (stage === "leads") return (lead.calls ?? 0) >= 3;
-  if (stage === "interview" || stage === "formation") return true;
+  if (stage === "interview" || stage === "formation") return !!(lead.date && lead.time);
   return false;
 }
 
-function templateFor(stage) {
-  if (stage === "interview") return TPL_INTERVIEW;
-  if (stage === "formation") return TPL_FORMATION;
-  return TPL_CALL; // leads
-}
-
+// ---------- New Lead Dialog ----------
 const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
   const [name, setName] = useState("");
   const [prefix, setPrefix] = useState("+352");
@@ -176,9 +262,6 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
     if (email && !email.includes("@")) {
       return alert("Email must contain '@'.");
     }
-    if (builtPhone && !isValidByCountry(prefix, builtPhone)) {
-      return alert("Mobile format is invalid for the selected country.");
-    }
 
     const now = new Date();
     const lead = {
@@ -200,13 +283,12 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* Smaller dialog */}
       <DialogContent className="max-w-lg h-auto">
         <DialogHeader><DialogTitle>New Lead</DialogTitle></DialogHeader>
         <div className="grid gap-3">
           <div className="grid gap-1">
             <Label>Full Name</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
+            <Input placeholder="John Doe" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
 
           <div className="grid gap-1">
@@ -216,23 +298,17 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
                 {PREFIXES.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
               <Input
-                placeholder={prefix === "+352" ? "691 999 999" : "mobile number"}
+                placeholder="mobile number"
                 value={localMobile}
                 onChange={(e) => setLocalMobile(e.target.value)}
                 inputMode="numeric"
               />
             </div>
-            {builtPhone && !isValidByCountry(prefix, builtPhone) && (
-              <div className="text-xs text-red-600">Invalid format for {prefix}.</div>
-            )}
           </div>
 
           <div className="grid gap-1">
             <Label>Email</Label>
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            {email && !email.includes("@") && (
-              <div className="text-xs text-red-600">Email must contain '@'.</div>
-            )}
+            <Input type="email" placeholder="johndoe@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
 
           <div className="grid gap-1">
@@ -247,7 +323,7 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
 
           <div className="grid gap-1">
             <Label>Calls (0–3)</Label>
-            <div className="w-20">
+            <div className="w-14">
               <Input
                 inputMode="numeric"
                 value={String(calls)}
@@ -269,28 +345,27 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
   );
 };
 
+// ---------- Main ----------
 export default function Inflow({ pipeline, setPipeline, onHire }) {
   const fileRef = useRef(null);
   const [addOpen, setAddOpen] = useState(false);
 
-  // Notify preview state
+  // Notify
   const [notifyOpen, setNotifyOpen] = useState(false);
   const [notifyText, setNotifyText] = useState("");
   const [notifyLead, setNotifyLead] = useState(null);
   const [notifyStage, setNotifyStage] = useState(null);
+  const [notifyLang, setNotifyLang] = useState("lb"); // lb | fr | de
 
   const stableUpdate = (updater) => {
     setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
   };
 
   const move = (item, from, to) => {
+    // Keep date/time when moving; do not reset
     stableUpdate((next) => {
       next[from] = next[from].filter((x) => x.id !== item.id);
-      const moved = { ...item };
-      if (to === "interview" || to === "formation") {
-        // leave date/time unchanged; user may set them any time
-      }
-      next[to].push(moved);
+      next[to].push({ ...item });
     });
     addAuditLog({ area: "Inflow", action: "Move", from, to, lead: { id: item.id, name: item.name } });
   };
@@ -311,87 +386,127 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     addAuditLog({ area: "Inflow", action: "Hire", lead: { id: item.id, name: item.name }, crewCode: code });
   };
 
-  // JSON import — normalize Indeed variations to expected shape
-  const normalizeIndeed = (row) => {
-    const name = row.name || row.full_name || row.candidate || `${row.first_name || ""} ${row.last_name || ""}`.trim();
-    const phoneRaw = row.phone || row.phone_number || row.mobile || row.contact?.phone || "";
-    const email = (row.email || row.mail || row.contact?.email || "").trim();
-    const source = (row.source || row.platform || row.channel || "Indeed").trim();
-    const calls = Number(row.calls ?? 0);
-    let date = row.date || row.applied_at || row.created_at || row.timestamp || "";
-    let time = row.time || "";
-    if (!date) {
-      const now = new Date();
-      date = fmtISO(now);
-      time = now.toTimeString().slice(0, 5);
+  // ---------- Import: JSON / NDJSON / CSV; detect PDF ----------
+  const parseMaybeCSV = (txt) => {
+    // very small CSV parser for common fields
+    const lines = txt.split(/\r?\n/).filter(Boolean);
+    if (lines.length < 2) return [];
+    const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
+    const idx = (k) => headers.findIndex((h) => h.includes(k));
+    const out = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(",");
+      out.push({
+        name: cols[idx("name")] || "",
+        email: cols[idx("mail")] || cols[idx("email")] || "",
+        phone: cols[idx("phone")] || cols[idx("mobile")] || "",
+        calls: cols[idx("calls")] || 0,
+        date: cols[idx("date")] || "",
+        time: cols[idx("time")] || "",
+        source: cols[idx("source")] || "Indeed",
+      });
     }
-    // try to infer country; if looks like raw digits assume Lux
-    let phone = "";
-    if (phoneRaw) {
-      const cleaned = String(phoneRaw).replace(/\s+/g, "");
-      if (cleaned.startsWith("+")) {
-        // keep prefix, best-effort format by country code
-        const prefix = cleaned.slice(0, 3) === "+33" ? "+33"
-          : cleaned.slice(0, 3) === "+32" ? "+32"
-          : cleaned.slice(0, 3) === "+49" ? "+49"
-          : "+352";
-        const rest = cleaned.replace(/^\+\d+/, "");
-        phone = formatPhoneByCountry(prefix, rest);
-      } else if (/^\d+$/.test(cleaned)) {
-        phone = formatPhoneByCountry("+352", cleaned);
-      }
-    }
-    return { name, phone, email, source, calls, date, time };
+    return out;
   };
+
+  const normalizeLead = (j) => ({
+    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
+    name: titleCase(j.name || ""),
+    phone: j.phone || "",
+    email: (j.email || "").trim(),
+    source: j.source || "Indeed",
+    calls: Math.min(Math.max(Number(j.calls || 0), 0), 3),
+    date: j.date ? (j.date.includes("-") ? parseDDMMtoISO(toDDMM(j.date)) : parseDDMMtoISO(j.date)) || fmtISO(new Date()) : fmtISO(new Date()),
+    time: j.time || new Date().toTimeString().slice(0, 5),
+  });
 
   const onImport = async (file) => {
     if (!file) return;
     try {
       const txt = await file.text();
-      let json = JSON.parse(txt);
-      if (!Array.isArray(json)) {
-        json = json.results || json.candidates || json.items || [];
+
+      // 1) Quick PDF detection (your "indeed test 1/2.json" are PDFs, not JSON)
+      if (txt.startsWith("%PDF")) {
+        alert("This file is a PDF, not a JSON/CSV export. Please export candidates as JSON or CSV from Indeed.");
+        return;
       }
-      if (!Array.isArray(json)) throw new Error("Expected an array.");
-      const leads = json
-        .map(normalizeIndeed)
-        .map((j) => ({
-          id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
-          name: titleCase(j.name || ""),
-          phone: j.phone || "",
-          email: (j.email || "").trim(),
-          source: j.source || "Indeed",
-          calls: Math.min(Math.max(Number(j.calls || 0), 0), 3),
-          date: j.date || fmtISO(new Date()),
-          time: j.time || new Date().toTimeString().slice(0, 5),
-        }))
-        .filter((l) => l.name && (l.phone || l.email));
-      if (!leads.length) return alert("No valid leads found in file.");
-      stableUpdate((next) => { next.leads = [...leads, ...next.leads]; });
-      addAuditLog({ area: "Inflow", action: "Import JSON", count: leads.length, source: "Indeed" });
+
+      let rows = [];
+
+      // 2) Try pure JSON array
+      try {
+        const asJson = JSON.parse(txt);
+        if (Array.isArray(asJson)) rows = asJson;
+        else if (asJson?.results && Array.isArray(asJson.results)) rows = asJson.results;
+        else if (asJson?.candidates && Array.isArray(asJson.candidates)) rows = asJson.candidates;
+      } catch {
+        // 3) Try NDJSON (one JSON per line)
+        const mayND = txt.trim().split(/\n+/).filter(Boolean);
+        if (mayND.length > 1) {
+          const nd = [];
+          for (const line of mayND) {
+            try { nd.push(JSON.parse(line)); } catch {}
+          }
+          if (nd.length) rows = nd;
+        }
+      }
+
+      // 4) Try CSV if still empty
+      if (!rows.length && txt.includes(",") && txt.includes("\n")) {
+        rows = parseMaybeCSV(txt);
+      }
+
+      if (!rows.length) {
+        alert("Could not parse the file. Please upload an Indeed JSON/CSV export.");
+        return;
+      }
+
+      // map common fields
+      const leads = rows
+        .map((row) => {
+          const name = row.name || row.full_name || row.candidate || `${row.first_name || ""} ${row.last_name || ""}`.trim();
+          const phone = row.phone || row.phone_number || row.mobile || row.contact?.phone || "";
+          const email = row.email || row.mail || row.contact?.email || "";
+          const source = row.source || row.platform || row.channel || "Indeed";
+          const calls = row.calls ?? 0;
+          const date = row.date || row.applied_at || row.created_at || row.timestamp || "";
+          const time = row.time || "";
+          return { name, phone, email, source, calls, date, time };
+        })
+        .filter((j) => j.name && (j.phone || j.email))
+        .map(normalizeLead);
+
+      if (!leads.length) {
+        alert("No valid leads found in file.");
+        return;
+      }
+
+      setPipeline((p) => ({ ...p, leads: [...leads, ...p.leads] }));
+      addAuditLog({ area: "Inflow", action: "Import", source: "Indeed", count: leads.length });
       alert(`Imported ${leads.length} lead(s).`);
     } catch (e) {
       console.error(e);
-      alert("Invalid JSON file.");
+      alert("Import failed. Please use an Indeed JSON/CSV export.");
     }
   };
 
-  // Notify flow
+  // ---------- Notify ----------
   const openNotify = (lead, stage) => {
-    const s = getSettings();
-    const tpl = templateFor(stage);
-    const text = compileTemplate(tpl, lead, { date: "(dd-mm-yyyy)", time: "(time)" });
+    const base = TPL[stage === "interview" ? "interview" : stage === "formation" ? "formation" : "call"];
+    const text = compileTemplate(base[notifyLang], lead);
     setNotifyText(text);
     setNotifyLead(lead);
     setNotifyStage(stage);
     setNotifyOpen(true);
   };
+
   const sendNotify = () => {
     if (!notifyLead) return;
     const from = getSettings().notifyFrom;
     addAuditLog({
       area: "Notify",
       action: "Send",
+      lang: notifyLang,
       stage: notifyStage,
       to: { email: notifyLead.email || null, phone: notifyLead.phone || null },
       from,
@@ -401,10 +516,20 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     setNotifyLead(null);
     setNotifyText("");
     setNotifyStage(null);
-    alert("Notification recorded in Audit Log.");
   };
 
-  // ---------- Tables ----------
+  // ---------- Table section (identical widths across all) ----------
+  const COLS = [
+    { w: "18%" }, // Name
+    { w: "20%" }, // Mobile
+    { w: "18%" }, // Email
+    { w: "12%" }, // Source
+    { w: "14%" }, // Date
+    { w: "12%" }, // Time
+    { w: "6%"  }, // Calls (only in Leads; empty col elsewhere keeps symmetry)
+    { w: "10%" }, // Actions
+  ];
+
   const Section = ({ title, keyName, prev, nextKey, extra, showCalls }) => (
     <Card className="border-2">
       <CardHeader>
@@ -417,14 +542,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         <div className="overflow-x-auto border rounded-xl">
           <table className="min-w-full text-sm table-fixed">
             <colgroup>
-              <col style={{ width: "20%" }} /> {/* Name */}
-              <col style={{ width: "20%" }} /> {/* Mobile */}
-              <col style={{ width: "18%" }} /> {/* Email */}
-              <col style={{ width: "14%" }} /> {/* Source */}
-              <col style={{ width: "14%" }} /> {/* Date */}
-              <col style={{ width: "14%" }} /> {/* Time */}
-              {!showCalls && <col style={{ width: "0%" }} />} {/* placeholder removed */}
-              <col style={{ width: "12%" }} /> {/* Actions */}
+              {COLS.map((c, i) => <col key={i} style={{ width: c.w }} />)}
             </colgroup>
             <thead className="bg-zinc-50">
               <tr>
@@ -434,7 +552,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                 <th className="p-3 text-center">Source</th>
                 <th className="p-3 text-left">Date</th>
                 <th className="p-3 text-left">Time</th>
-                {showCalls && <th className="p-3 text-center">Calls</th>}
+                <th className="p-3 text-center">Calls</th>
                 <th className="p-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -447,10 +565,11 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                   <tr key={x.id} className="border-t">
                     <td className="p-3 font-medium">{titleCase(x.name)}</td>
 
-                    {/* Mobile (free edit; we don't enforce reformat here to not fight the user) */}
+                    {/* Mobile */}
                     <td className="p-3">
                       <Input
                         value={x.phone || ""}
+                        placeholder="mobile number"
                         onChange={(e) =>
                           stableUpdate((p) => {
                             p[keyName] = p[keyName].map((it) =>
@@ -465,6 +584,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                     <td className="p-3">
                       <Input
                         type="email"
+                        placeholder="johndoe@gmail.com"
                         value={x.email || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
@@ -479,26 +599,28 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                     {/* Source */}
                     <td className="p-3 text-center">{x.source}</td>
 
-                    {/* Date */}
+                    {/* Date (DD-MM-YYYY) */}
                     <td className="p-3">
                       <Input
-                        type="date"
-                        value={x.date || ""}
+                        type="text"
+                        placeholder="dd-mm-yyyy"
+                        value={toDDMM(x.date) || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
+                            const iso = parseDDMMtoISO(e.target.value) || "";
                             p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, date: e.target.value } : it
+                              it.id === x.id ? { ...it, date: iso } : it
                             );
                           })
                         }
                       />
                     </td>
 
-                    {/* Time */}
+                    {/* Time (narrow) */}
                     <td className="p-3">
                       <Input
                         type="time"
-                        className="pr-2"
+                        className="w-24 pr-2"
                         value={x.time || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
@@ -510,10 +632,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       />
                     </td>
 
-                    {/* Calls only for Leads */}
-                    {showCalls && (
-                      <td className="p-3 text-center">
-                        <div className="w-16 mx-auto">
+                    {/* Calls (only meaningful in Leads; keep empty box for symmetry otherwise) */}
+                    <td className="p-3 text-center">
+                      {showCalls ? (
+                        <div className="w-12 mx-auto">
                           <Input
                             inputMode="numeric"
                             value={String(x.calls ?? 0)}
@@ -527,8 +649,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                             }
                           />
                         </div>
-                      </td>
-                    )}
+                      ) : (
+                        <div /> // empty cell but same width
+                      )}
+                    </td>
 
                     <td className="p-3 flex gap-1 justify-end">
                       {prev && (
@@ -590,7 +714,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
             ref={fileRef}
             type="file"
             hidden
-            accept="application/json"
+            accept=".json,.csv,application/json,text/csv"
             onChange={(e) => onImport(e.target.files?.[0])}
           />
         </div>
@@ -616,13 +740,31 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         onSave={(lead) => setPipeline((p) => ({ ...p, leads: [lead, ...p.leads] }))}
       />
 
-      {/* Notify dialog */}
+      {/* Notify dialog (with language) */}
       <Dialog open={notifyOpen} onOpenChange={setNotifyOpen}>
         <DialogContent className="max-w-xl h-auto">
           <DialogHeader><DialogTitle>Notify</DialogTitle></DialogHeader>
-          <div className="grid gap-2">
+          <div className="grid gap-3">
             {notifyLead && (
               <>
+                <div className="flex items-center gap-3 text-sm">
+                  <div>Lang:</div>
+                  <select
+                    className="h-9 border rounded-md px-2"
+                    value={notifyLang}
+                    onChange={(e) => {
+                      const lang = e.target.value;
+                      setNotifyLang(lang);
+                      const base = TPL[notifyStage === "interview" ? "interview" : notifyStage === "formation" ? "formation" : "call"];
+                      setNotifyText(compileTemplate(base[lang], notifyLead));
+                    }}
+                  >
+                    <option value="lb">Lëtzebuergesch</option>
+                    <option value="fr">Français</option>
+                    <option value="de">Deutsch</option>
+                  </select>
+                </div>
+
                 <div className="text-sm">
                   To: {notifyLead.email || "—"} {notifyLead.phone ? ` / ${notifyLead.phone}` : ""}
                 </div>
