@@ -1,8 +1,15 @@
-// util.js — Proago CRM (v2025-09-03c • Step 1 safe update)
-// Restored legacy helpers expected by pages: fmtISO, fmtUK, addDays
-// Kept new: audit log, Lux phone, numbers+commas, averages (2 decimals),
-// DD-MM-YYYY, mult %, defaults (rate bands & conversion), legacy analytics.
+// util.js — Proago CRM (v2025-09-03d • Step 1 safe update)
+// Restores/keeps all legacy helpers used across pages:
+// - fmtISO, fmtUK, addDays
+// - rankAcr, rankOrderVal
+// - last5ScoresFor, boxPercentsLast8w
+// - toMoney, monthKey, monthLabel, rateForDate
+// Adds/keeps new utilities:
+// - Audit log, Lux phone validation/formatting
+// - Numbers accept digits+commas, averages 2 decimals
+// - DD-MM-YYYY dates, mult displayed as %, defaults for settings
 
+// -------------------- Storage keys --------------------
 export const K = {
   settings: "proago_settings_v4",
   pipeline: "proago_pipeline_v4",
@@ -12,7 +19,7 @@ export const K = {
   audit: "proago_audit_v1",
 };
 
-// -------- Defaults (respect commas) --------
+// -------------------- Defaults (respect commas) --------------------
 export const DEFAULT_SETTINGS = {
   projects: ["Hello Fresh"],
   rateBands: [
@@ -31,14 +38,14 @@ export const DEFAULT_SETTINGS = {
   notifyFrom: { email: "noreply@proago.com", phone: "+352600000000" },
 };
 
-// -------- LocalStorage helpers --------
+// -------------------- LocalStorage helpers --------------------
 export const load = (k, def) => {
   try { const raw = localStorage.getItem(k); return raw ? JSON.parse(raw) : def; }
   catch { return def; }
 };
 export const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
-// -------- Clone / TitleCase --------
+// -------------------- Clone / TitleCase --------------------
 export const clone = (x) =>
   typeof structuredClone === "function" ? structuredClone(x) : JSON.parse(JSON.stringify(x));
 
@@ -46,7 +53,7 @@ export function titleCase(str) {
   return (str || "").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// -------- Date helpers (global rule: DD-MM-YYYY) --------
+// -------------------- Date helpers (global rule: DD-MM-YYYY) --------------------
 export function toDDMMYYYY(date) {
   const d = new Date(date);
   const dd = String(d.getDate()).padStart(2, "0");
@@ -71,6 +78,22 @@ export function addDays(date, n) {
   return d;
 }
 
+// Month helpers used by Wages/Pay
+export function monthKey(date) {
+  const d = new Date(date);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  // canonical key: YYYY-MM
+  return `${yyyy}-${mm}`;
+}
+export function monthLabel(date) {
+  // project rule prefers numeric labels; show MM-YYYY
+  const d = new Date(date);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${mm}-${yyyy}`;
+}
+
 // Week helpers (ISO, Monday start)
 export function startOfWeekMon(d) {
   const dt = new Date(d);
@@ -86,7 +109,7 @@ export function weekNumberISO(d) {
   return Math.ceil(((date - yearStart) / 86400000 + 1) / 7);
 }
 
-// -------- Numbers & money (digits + commas) --------
+// -------------------- Numbers & money (digits + commas) --------------------
 export function sanitizeNumericInput(str) { return (str || "").replace(/[^0-9,]/g, ""); }
 export function parseNumber(str) { if (!str) return 0; return Number(String(str).replace(",", ".")); }
 export function formatNumber(num, decimals = 2) {
@@ -103,10 +126,10 @@ export function avg(arr) {
   return formatNumber(total / arr.length, 2);
 }
 
-// -------- Mult as % --------
+// -------------------- Mult as % --------------------
 export function formatMult(value) { return `${value ? value : 100}%`; }
 
-// -------- Phone (Luxembourg) --------
+// -------------------- Phone (Luxembourg) --------------------
 export function formatLuxPhone(input) {
   const digitsOnly = String(input || "").replace(/\D/g, "");
   let formatted = "+352";
@@ -122,7 +145,7 @@ export function isValidLuxPhone(input) {
   return d.startsWith("352") && d.length === 12; // +352 + 9 digits
 }
 
-// -------- Audit Log --------
+// -------------------- Audit Log --------------------
 export function addAuditLog(entry) {
   try {
     const logs = load(K.audit, []);
@@ -132,7 +155,7 @@ export function addAuditLog(entry) {
 }
 export function getAuditLog() { return load(K.audit, []); }
 
-// -------- Legacy rank helpers (used by Recruiters.jsx) --------
+// -------------------- Legacy rank helpers (used in Recruiters.jsx) --------------------
 const RANK_ORDER = ["BM", "SM", "TC", "PC", "PR", "RK"];
 export function rankAcr(role) {
   const map = { "Branch Manager":"BM", "Sales Manager":"SM", "Team Captain":"TC",
@@ -145,7 +168,7 @@ export function rankOrderVal(roleOrAcr) {
   return idx >= 0 ? idx : RANK_ORDER.length - 1;
 }
 
-// -------- History analytics (safe fallbacks) --------
+// -------------------- History analytics (safe fallbacks) --------------------
 function* walkHistory(history) {
   if (!Array.isArray(history)) return;
   for (const item of history) {
@@ -190,4 +213,22 @@ export function boxPercentsLast8w(a, b) {
   }
   const pct = (n, d) => (d > 0 ? Math.round((n / d) * 100) : 0);
   return { b2: pct(box2 + box2d, score), b4: pct(box4 + box4d, score) };
+}
+
+// -------------------- Rates --------------------
+/**
+ * Returns the hourly rate NUMBER for a given date, based on settings.rateBands.
+ * - Bands are chosen by the latest band whose startISO <= date.
+ * - Rates in settings may use commas (e.g., "15,2473") — we parse them.
+ */
+export function rateForDate(date, settings = {}) {
+  const bands = (settings.rateBands && settings.rateBands.length ? settings.rateBands : DEFAULT_SETTINGS.rateBands).slice();
+  // sort ascending by start date
+  bands.sort((a, b) => new Date(a.startISO) - new Date(b.startISO));
+  const ts = new Date(date).getTime();
+  let chosen = bands[0];
+  for (const b of bands) {
+    if (new Date(b.startISO).getTime() <= ts) chosen = b;
+  }
+  return parseNumber(chosen.rate);
 }
