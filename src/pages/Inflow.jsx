@@ -1,5 +1,4 @@
-// Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.4)
-// Updates per latest feedback:
+// Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.4 hotfix)
 // • dd/mm/yyyy in generated texts (notifications); inputs keep native date picker
 // • Column widths: 18|18|20|12|12|8|4|8 (Name..Actions) — identical in all 3 sections
 // • Date column smaller (12%) + centered text; Time 8% (narrow); Calls text centered
@@ -317,6 +316,7 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
                   const n = Math.max(0, Math.min(3, Number(String(e.target.value).replace(/\D/g, "")) || 0));
                   setCalls(n);
                 }}
+                className="text-center"
               />
             </div>
           </div>
@@ -337,17 +337,21 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
 
   // Notify state
   const [notifyOpen, setNotifyOpen] = useState(false);
-  thead;
   const [notifyText, setNotifyText] = useState("");
   const [notifyLead, setNotifyLead] = useState(null);
   const [notifyStage, setNotifyStage] = useState(null);
   const [notifyLang, setNotifyLang] = useState("lb"); // lb | fr | de
 
-  const stableUpdate = (updater) => setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
+  const stableUpdate = (updater) =>
+    setPipeline((prev) => {
+      const next = clone(prev);
+      updater(next);
+      return next;
+    });
 
   const move = (item, from, to) => {
     // Reset date/time when moving to interview or formation (as requested)
-    const reset = (to === "interview" || to === "formation");
+    const reset = to === "interview" || to === "formation";
     stableUpdate((next) => {
       next[from] = next[from].filter((x) => x.id !== item.id);
       next[to].push(reset ? { ...item, date: "", time: "" } : { ...item });
@@ -357,7 +361,9 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
 
   const del = (item, from) => {
     if (!confirm("Delete?")) return;
-    stableUpdate((next) => { next[from] = next[from].filter((x) => x.id !== item.id); });
+    stableUpdate((next) => {
+      next[from] = next[from].filter((x) => x.id !== item.id);
+    });
     addAuditLog({ area: "Inflow", action: "Delete Lead", from, lead: { id: item.id, name: item.name } });
   };
 
@@ -365,9 +371,14 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     let code = prompt("Crewcode (5 digits):");
     if (!code) return;
     code = String(code).trim();
-    if (!/^\d{5}$/.test(code)) { alert("Crewcode must be exactly 5 digits."); return; }
+    if (!/^\d{5}$/.test(code)) {
+      alert("Crewcode must be exactly 5 digits.");
+      return;
+    }
     onHire({ ...item, crewCode: code, role: "Rookie" });
-    stableUpdate((next) => { next.formation = next.formation.filter((x) => x.id !== item.id); });
+    stableUpdate((next) => {
+      next.formation = next.formation.filter((x) => x.id !== item.id);
+    });
     addAuditLog({ area: "Inflow", action: "Hire", lead: { id: item.id, name: item.name }, crewCode: code });
   };
 
@@ -423,7 +434,11 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         // Try NDJSON
         const lines = txt.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
         const nd = [];
-        for (const line of lines) { try { nd.push(JSON.parse(line)); } catch {} }
+        for (const line of lines) {
+          try {
+            nd.push(JSON.parse(line));
+          } catch {}
+        }
         if (nd.length) rows = nd;
       }
 
@@ -432,11 +447,18 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         rows = parseMaybeCSV(txt);
       }
 
-      if (!rows.length) { alert("Could not parse this file. Please upload an Indeed JSON/CSV export."); return; }
+      if (!rows.length) {
+        alert("Could not parse this file. Please upload an Indeed JSON/CSV export.");
+        return;
+      }
 
       const leads = rows
         .map((row) => {
-          const name = row.name || row.full_name || row.candidate || `${row.first_name || ""} ${row.last_name || ""}`.trim();
+          const name =
+            row.name ||
+            row.full_name ||
+            row.candidate ||
+            `${row.first_name || ""} ${row.last_name || ""}`.trim();
           const phone = row.phone || row.phone_number || row.mobile || row.contact?.phone || "";
           const email = row.email || row.mail || row.contact?.email || "";
           const source = row.source || row.platform || row.channel || "Indeed";
@@ -448,7 +470,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         .filter((j) => j.name && (j.phone || j.email))
         .map(normalizeLead);
 
-      if (!leads.length) { alert("No valid leads found in file."); return; }
+      if (!leads.length) {
+        alert("No valid leads found in file.");
+        return;
+      }
 
       setPipeline((p) => ({ ...p, leads: [...leads, ...p.leads] }));
       addAuditLog({ area: "Inflow", action: "Import", source: "Indeed", count: leads.length });
@@ -461,7 +486,8 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
 
   // -------- Notify --------
   const openNotify = (lead, stage) => {
-    const base = TPL[stage === "interview" ? "interview" : stage === "formation" ? "formation" : "call"];
+    const base =
+      TPL[stage === "interview" ? "interview" : stage === "formation" ? "formation" : "call"];
     const text = compileTemplate(base[notifyLang], lead);
     setNotifyText(text);
     setNotifyLead(lead);
@@ -500,7 +526,9 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         <div className="overflow-x-auto border rounded-xl">
           <table className="min-w-full text-sm table-fixed">
             <colgroup>
-              {COLS.map((c, i) => <col key={i} style={{ width: c.w }} />)}
+              {COLS.map((c, i) => (
+                <col key={i} style={{ width: c.w }} />
+              ))}
             </colgroup>
             <thead className="bg-zinc-50">
               <tr>
@@ -600,7 +628,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                             value={String(x.calls ?? 0)}
                             onChange={(e) =>
                               stableUpdate((p) => {
-                                const n = Math.max(0, Math.min(3, Number(String(e.target.value).replace(/\D/g, "")) || 0));
+                                const n = Math.max(
+                                  0,
+                                  Math.min(3, Number(String(e.target.value).replace(/\D/g, "")) || 0)
+                                );
                                 p[keyName] = p[keyName].map((it) =>
                                   it.id === x.id ? { ...it, calls: n } : it
                                 );
@@ -711,12 +742,16 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       {/* Notify dialog — bigger; vertical top block: To / Language / From (labels removed) */}
       <Dialog open={notifyOpen} onOpenChange={setNotifyOpen}>
         <DialogContent className="max-w-3xl h-auto">
-          <DialogHeader><DialogTitle>Notify</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Notify</DialogTitle>
+          </DialogHeader>
           <div className="grid gap-3">
             {notifyLead && (
               <>
                 <div className="grid gap-2">
-                  <div className="text-sm truncate">{notifyLead.email || "—"} {notifyLead.phone ? ` / ${notifyLead.phone}` : ""}</div>
+                  <div className="text-sm truncate">
+                    {notifyLead.email || "—"} {notifyLead.phone ? ` / ${notifyLead.phone}` : ""}
+                  </div>
                   <div>
                     <select
                       className="h-9 border rounded-md px-2 w-full"
@@ -724,10 +759,12 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       onChange={(e) => {
                         const lang = e.target.value;
                         setNotifyLang(lang);
-                        const base = TPL[
-                          notifyStage === "interview" ? "interview" :
-                          notifyStage === "formation" ? "formation" : "call"
-                        ];
+                        const base =
+                          TPL[notifyStage === "interview"
+                            ? "interview"
+                            : notifyStage === "formation"
+                            ? "formation"
+                            : "call"];
                         setNotifyText(compileTemplate(base[lang], notifyLead));
                       }}
                     >
@@ -736,7 +773,9 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       <option value="de">Deutsch</option>
                     </select>
                   </div>
-                  <div className="text-sm truncate">{getSettings().notifyFrom?.email} / {getSettings().notifyFrom?.phone}</div>
+                  <div className="text-sm truncate">
+                    {getSettings().notifyFrom?.email} / {getSettings().notifyFrom?.phone}
+                  </div>
                 </div>
 
                 <textarea
@@ -748,8 +787,12 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
             )}
           </div>
           <DialogFooter className="justify-end gap-2">
-            <Button variant="outline" onClick={() => setNotifyOpen(false)}>Cancel</Button>
-            <Button style={{ background: "black", color: "white" }} onClick={sendNotify}>Send</Button>
+            <Button variant="outline" onClick={() => setNotifyOpen(false)}>
+              Cancel
+            </Button>
+            <Button style={{ background: "black", color: "white" }} onClick={sendNotify}>
+              Send
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
