@@ -1,12 +1,10 @@
-// Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.4 hotfix)
-// • dd/mm/yyyy in generated texts (notifications); inputs keep native date picker
-// • Column widths: 18|18|20|12|12|8|4|8 (Name..Actions) — identical in all 3 sections
-// • Date column smaller (12%) + centered text; Time 8% (narrow); Calls text centered
-// • Bell slot always reserved; bell sits LEFT of trash (incl. Formation)
-// • Leads bell only when Calls=3; Interview/Formation bell only when Date & Time set
-// • Move to Interview/Formation resets Date & Time
-// • New Lead placeholders; Calls input smaller
-// • Importer: JSON/NDJSON/CSV with BOM/whitespace tolerance
+// Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.5)
+// • Uniform column widths across all 3 sections
+// • Actions order: Bell • Up • Down • Trash (with reserved slots even if hidden)
+// • Notify & New Lead modals: vertical layout, centered content
+// • dd/mm/yyyy in message templates; inputs keep native date picker
+// • Time input narrow; Calls centered; Interview/Formation reset date/time on move
+// • Robust Indeed import (JSON/NDJSON/CSV)
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -20,6 +18,7 @@ import * as U from "../util.js";
 
 const { titleCase, clone, fmtISO, addAuditLog, load, K, DEFAULT_SETTINGS } = U;
 
+// Column widths (identical in every section)
 const COLS = [
   { w: "18%" }, // Name
   { w: "18%" }, // Mobile
@@ -28,12 +27,18 @@ const COLS = [
   { w: "12%" }, // Date
   { w: "8%"  }, // Time
   { w: "4%"  }, // Calls
-  { w: "8%"  }, // Actions (includes reserved bell space)
+  { w: "8%"  }, // Actions
 ];
+
+const BTN_W = 34; // px (button slot width)
+const BTN_H = 30; // px (button slot height)
+const BtnSlot = ({ children }) => (
+  children ? children : <span className="inline-block" style={{ width: BTN_W, height: BTN_H }} aria-hidden="true" />
+);
 
 const PREFIXES = ["+352", "+33", "+32", "+49"];
 
-// -------- phone formatting (light touch) for New Lead only --------
+// Light phone format for New Lead only (you can still type any text later in table)
 function formatPhoneByCountry(prefix, localDigits) {
   const d = String(localDigits || "").replace(/\D+/g, "");
   switch (prefix) {
@@ -85,7 +90,7 @@ function getSettings() {
   return { ...s, notifyFrom };
 }
 
-// -------- Templates (LB / FR / DE), compiled to dd/mm/yyyy --------
+// Templates (LB / FR / DE) — compiled to dd/mm/yyyy for messages
 const TPL = {
   call: {
     lb: `Moien {name},
@@ -228,7 +233,7 @@ function shouldShowBell(stage, lead) {
   return false;
 }
 
-// -------- New Lead Dialog --------
+// ---------- New Lead Dialog ----------
 const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
   const [name, setName] = useState("");
   const [prefix, setPrefix] = useState("+352");
@@ -268,22 +273,24 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg h-auto">
-        <DialogHeader><DialogTitle>New Lead</DialogTitle></DialogHeader>
-        <div className="grid gap-3">
+      <DialogContent className="max-w-xl">
+        <DialogHeader><DialogTitle className="text-center">New Lead</DialogTitle></DialogHeader>
+
+        <div className="grid gap-3 text-center items-center">
           <div className="grid gap-1">
             <Label>Full Name</Label>
-            <Input placeholder="John Doe" value={name} onChange={(e) => setName(e.target.value)} />
+            <Input placeholder="John Doe" className="text-center" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
 
           <div className="grid gap-1">
             <Label>Mobile</Label>
-            <div className="flex gap-2">
+            <div className="flex gap-2 justify-center">
               <select className="h-10 border rounded-md px-2" value={prefix} onChange={(e) => setPrefix(e.target.value)}>
                 {PREFIXES.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
               <Input
                 placeholder="mobile number"
+                className="text-center"
                 value={localMobile}
                 onChange={(e) => setLocalMobile(e.target.value)}
                 inputMode="numeric"
@@ -293,12 +300,12 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
 
           <div className="grid gap-1">
             <Label>Email</Label>
-            <Input type="email" placeholder="johndoe@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <Input type="email" placeholder="johndoe@gmail.com" className="text-center" value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
 
           <div className="grid gap-1">
             <Label>Source</Label>
-            <select className="h-10 border rounded-md px-2" value={source} onChange={(e) => setSource(e.target.value)}>
+            <select className="h-10 border rounded-md px-2 mx-auto" value={source} onChange={(e) => setSource(e.target.value)}>
               <option>Indeed</option>
               <option>Street</option>
               <option>Referral</option>
@@ -308,21 +315,21 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
 
           <div className="grid gap-1">
             <Label>Calls (0–3)</Label>
-            <div className="w-12">
+            <div className="w-12 mx-auto">
               <Input
                 inputMode="numeric"
+                className="text-center"
                 value={String(calls)}
                 onChange={(e) => {
                   const n = Math.max(0, Math.min(3, Number(String(e.target.value).replace(/\D/g, "")) || 0));
                   setCalls(n);
                 }}
-                className="text-center"
               />
             </div>
           </div>
         </div>
 
-        <DialogFooter className="justify-end gap-2">
+        <DialogFooter className="justify-center gap-2 mt-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button style={{ background: "#d9010b", color: "white" }} onClick={save}>Save</Button>
         </DialogFooter>
@@ -343,14 +350,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
   const [notifyLang, setNotifyLang] = useState("lb"); // lb | fr | de
 
   const stableUpdate = (updater) =>
-    setPipeline((prev) => {
-      const next = clone(prev);
-      updater(next);
-      return next;
-    });
+    setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
 
   const move = (item, from, to) => {
-    // Reset date/time when moving to interview or formation (as requested)
+    // Reset date/time when moving to interview or formation
     const reset = to === "interview" || to === "formation";
     stableUpdate((next) => {
       next[from] = next[from].filter((x) => x.id !== item.id);
@@ -361,9 +364,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
 
   const del = (item, from) => {
     if (!confirm("Delete?")) return;
-    stableUpdate((next) => {
-      next[from] = next[from].filter((x) => x.id !== item.id);
-    });
+    stableUpdate((next) => { next[from] = next[from].filter((x) => x.id !== item.id); });
     addAuditLog({ area: "Inflow", action: "Delete Lead", from, lead: { id: item.id, name: item.name } });
   };
 
@@ -371,18 +372,13 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     let code = prompt("Crewcode (5 digits):");
     if (!code) return;
     code = String(code).trim();
-    if (!/^\d{5}$/.test(code)) {
-      alert("Crewcode must be exactly 5 digits.");
-      return;
-    }
+    if (!/^\d{5}$/.test(code)) { alert("Crewcode must be exactly 5 digits."); return; }
     onHire({ ...item, crewCode: code, role: "Rookie" });
-    stableUpdate((next) => {
-      next.formation = next.formation.filter((x) => x.id !== item.id);
-    });
+    stableUpdate((next) => { next.formation = next.formation.filter((x) => x.id !== item.id); });
     addAuditLog({ area: "Inflow", action: "Hire", lead: { id: item.id, name: item.name }, crewCode: code });
   };
 
-  // -------- Import: JSON / NDJSON / CSV (tolerant) --------
+  // Import: JSON / NDJSON / CSV (tolerant)
   const parseMaybeCSV = (txt) => {
     const lines = txt.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     if (lines.length < 2) return [];
@@ -411,7 +407,6 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     email: (j.email || "").trim(),
     source: j.source || "Indeed",
     calls: Math.min(Math.max(Number(j.calls || 0), 0), 3),
-    // Accept ISO if provided; otherwise default to today (we keep picker visual)
     date: /^\d{4}-\d{2}-\d{2}$/.test(j.date || "") ? j.date : fmtISO(new Date()),
     time: j.time || new Date().toTimeString().slice(0, 5),
   });
@@ -420,10 +415,9 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     if (!file) return;
     try {
       let txt = await file.text();
-      txt = txt.replace(/^\uFEFF/, ""); // strip BOM
+      txt = txt.replace(/^\uFEFF/, ""); // BOM
       let rows = [];
 
-      // Try JSON
       try {
         const js = JSON.parse(txt);
         if (Array.isArray(js)) rows = js;
@@ -431,34 +425,19 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         else if (Array.isArray(js?.candidates)) rows = js.candidates;
         else if (Array.isArray(js?.data)) rows = js.data;
       } catch {
-        // Try NDJSON
         const lines = txt.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
         const nd = [];
-        for (const line of lines) {
-          try {
-            nd.push(JSON.parse(line));
-          } catch {}
-        }
+        for (const line of lines) { try { nd.push(JSON.parse(line)); } catch {} }
         if (nd.length) rows = nd;
       }
 
-      // Try CSV
-      if (!rows.length && txt.includes(",") && txt.includes("\n")) {
-        rows = parseMaybeCSV(txt);
-      }
+      if (!rows.length && txt.includes(",") && txt.includes("\n")) rows = parseMaybeCSV(txt);
 
-      if (!rows.length) {
-        alert("Could not parse this file. Please upload an Indeed JSON/CSV export.");
-        return;
-      }
+      if (!rows.length) { alert("Could not parse this file. Please upload an Indeed JSON/CSV export."); return; }
 
       const leads = rows
         .map((row) => {
-          const name =
-            row.name ||
-            row.full_name ||
-            row.candidate ||
-            `${row.first_name || ""} ${row.last_name || ""}`.trim();
+          const name = row.name || row.full_name || row.candidate || `${row.first_name || ""} ${row.last_name || ""}`.trim();
           const phone = row.phone || row.phone_number || row.mobile || row.contact?.phone || "";
           const email = row.email || row.mail || row.contact?.email || "";
           const source = row.source || row.platform || row.channel || "Indeed";
@@ -470,10 +449,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         .filter((j) => j.name && (j.phone || j.email))
         .map(normalizeLead);
 
-      if (!leads.length) {
-        alert("No valid leads found in file.");
-        return;
-      }
+      if (!leads.length) { alert("No valid leads found in file."); return; }
 
       setPipeline((p) => ({ ...p, leads: [...leads, ...p.leads] }));
       addAuditLog({ area: "Inflow", action: "Import", source: "Indeed", count: leads.length });
@@ -484,10 +460,9 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     }
   };
 
-  // -------- Notify --------
+  // Notify
   const openNotify = (lead, stage) => {
-    const base =
-      TPL[stage === "interview" ? "interview" : stage === "formation" ? "formation" : "call"];
+    const base = TPL[stage === "interview" ? "interview" : stage === "formation" ? "formation" : "call"];
     const text = compileTemplate(base[notifyLang], lead);
     setNotifyText(text);
     setNotifyLead(lead);
@@ -513,7 +488,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     setNotifyStage(null);
   };
 
-  // -------- Table section (identical widths across all) --------
+  // Section renderer
   const Section = ({ title, keyName, prev, nextKey, extra, showCalls }) => (
     <Card className="border-2">
       <CardHeader>
@@ -525,20 +500,15 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       <CardContent>
         <div className="overflow-x-auto border rounded-xl">
           <table className="min-w-full text-sm table-fixed">
-            <colgroup>
-              {COLS.map((c, i) => (
-                <col key={i} style={{ width: c.w }} />
-              ))}
-            </colgroup>
+            <colgroup>{COLS.map((c, i) => <col key={i} style={{ width: c.w }} />)}</colgroup>
             <thead className="bg-zinc-50">
               <tr>
                 <th className="p-3 text-left">Name</th>
                 <th className="p-3 text-left">Mobile</th>
                 <th className="p-3 text-left">Email</th>
                 <th className="p-3 text-center">Source</th>
-                <th className="p-3 text-left">Date</th>
-                <th className="p-3 text-left">Time</th>
-                {/* Keep header cell for Calls in every table; blank text for non-Leads keeps symmetry */}
+                <th className="p-3 text-center">Date</th>
+                <th className="p-3 text-center">Time</th>
                 <th className="p-3 text-center">{showCalls ? "Calls" : ""}</th>
                 <th className="p-3 text-right">Actions</th>
               </tr>
@@ -559,9 +529,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                         placeholder="mobile number"
                         onChange={(e) =>
                           stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, phone: e.target.value } : it
-                            );
+                            p[keyName] = p[keyName].map((it) => it.id === x.id ? { ...it, phone: e.target.value } : it);
                           })
                         }
                       />
@@ -575,9 +543,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                         value={x.email || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, email: e.target.value } : it
-                            );
+                            p[keyName] = p[keyName].map((it) => it.id === x.id ? { ...it, email: e.target.value } : it);
                           })
                         }
                       />
@@ -586,7 +552,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                     {/* Source */}
                     <td className="p-3 text-center">{x.source}</td>
 
-                    {/* Date — native picker, centered text */}
+                    {/* Date — centered */}
                     <td className="p-3">
                       <Input
                         type="date"
@@ -594,15 +560,13 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                         value={x.date || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, date: e.target.value } : it
-                            );
+                            p[keyName] = p[keyName].map((it) => it.id === x.id ? { ...it, date: e.target.value } : it);
                           })
                         }
                       />
                     </td>
 
-                    {/* Time — narrower, centered */}
+                    {/* Time — centered + narrow */}
                     <td className="p-3">
                       <Input
                         type="time"
@@ -610,15 +574,13 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                         value={x.time || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, time: e.target.value } : it
-                            );
+                            p[keyName] = p[keyName].map((it) => it.id === x.id ? { ...it, time: e.target.value } : it);
                           })
                         }
                       />
                     </td>
 
-                    {/* Calls — only editable in Leads; center text; keep the cell in other tables */}
+                    {/* Calls — only editable in Leads */}
                     <td className="p-3 text-center">
                       {showCalls ? (
                         <div className="w-10 mx-auto">
@@ -628,13 +590,8 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                             value={String(x.calls ?? 0)}
                             onChange={(e) =>
                               stableUpdate((p) => {
-                                const n = Math.max(
-                                  0,
-                                  Math.min(3, Number(String(e.target.value).replace(/\D/g, "")) || 0)
-                                );
-                                p[keyName] = p[keyName].map((it) =>
-                                  it.id === x.id ? { ...it, calls: n } : it
-                                );
+                                const n = Math.max(0, Math.min(3, Number(String(e.target.value).replace(/\D/g, "")) || 0));
+                                p[keyName] = p[keyName].map((it) => it.id === x.id ? { ...it, calls: n } : it);
                               })
                             }
                           />
@@ -644,41 +601,67 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       )}
                     </td>
 
-                    {/* Actions — reserve bell slot (same size) + place bell LEFT of trash */}
+                    {/* Actions — order Bell • Up • Down • Trash, with reserved slots */}
                     <td className="p-3 flex gap-1 justify-end items-center">
-                      {prev && (
-                        <Button size="sm" variant="outline" title="Back" onClick={() => move(x, keyName, prev)}>
-                          <ChevronUp className="h-4 w-4" />
-                        </Button>
-                      )}
-                      {nextKey && (
-                        <Button size="sm" variant="outline" title="Move" onClick={() => move(x, keyName, nextKey)}>
-                          <ChevronDown className="h-4 w-4" />
-                        </Button>
-                      )}
+                      {/* Bell */}
+                      <BtnSlot>
+                        {showBell && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            title="Notify"
+                            onClick={() => openNotify(x, stage)}
+                            style={{ background: "black", color: "white", width: BTN_W, height: BTN_H }}
+                          >
+                            <Bell className="h-4 w-4" color="white" />
+                          </Button>
+                        )}
+                      </BtnSlot>
 
-                      {/* Reserved bell slot (button or equal-width spacer) */}
-                      {showBell ? (
+                      {/* Up */}
+                      <BtnSlot>
+                        {prev && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            title="Back"
+                            onClick={() => move(x, keyName, prev)}
+                            style={{ width: BTN_W, height: BTN_H }}
+                          >
+                            <ChevronUp className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </BtnSlot>
+
+                      {/* Down */}
+                      <BtnSlot>
+                        {nextKey && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            title="Move"
+                            onClick={() => move(x, keyName, nextKey)}
+                            style={{ width: BTN_W, height: BTN_H }}
+                          >
+                            <ChevronDown className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </BtnSlot>
+
+                      {/* Trash */}
+                      <BtnSlot>
                         <Button
                           size="sm"
-                          variant="outline"
-                          title="Notify"
-                          onClick={() => openNotify(x, stage)}
-                          style={{ background: "black", color: "white" }}
+                          variant="destructive"
+                          onClick={() => del(x, keyName)}
+                          style={{ width: BTN_W, height: BTN_H }}
                         >
-                          <Bell className="h-4 w-4" color="white" />
+                          <Trash2 className="h-4 w-4" />
                         </Button>
-                      ) : (
-                        <span className="inline-block w-[34px] h-[30px]" aria-hidden="true" />
-                      )}
+                      </BtnSlot>
 
-                      {/* Row-specific extra (e.g., Hire) */}
+                      {/* Per-row extra (e.g., Hire in Formation) — keep after fixed 4 slots to not affect alignment */}
                       {typeof extra === "function" && extra(x)}
-
-                      {/* Trash (after bell) */}
-                      <Button size="sm" variant="destructive" onClick={() => del(x, keyName)}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
                     </td>
                   </tr>
                 );
@@ -696,17 +679,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       <div className="flex justify-between items-center">
         <div />
         <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={() => setAddOpen(true)}
-            style={{ background: "black", color: "white" }}
-          >
+          <Button variant="outline" onClick={() => setAddOpen(true)} style={{ background: "black", color: "white" }}>
             <Plus className="h-4 w-4 mr-1" /> Add
           </Button>
-          <Button
-            onClick={() => fileRef.current?.click()}
-            style={{ background: "black", color: "white" }}
-          >
+          <Button onClick={() => fileRef.current?.click()} style={{ background: "black", color: "white" }}>
             <Upload className="h-4 w-4 mr-1" /> Import
           </Button>
           <input
@@ -733,51 +709,53 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         )}
       />
 
+      {/* New Lead */}
       <AddLeadDialog
         open={addOpen}
         onOpenChange={setAddOpen}
         onSave={(lead) => setPipeline((p) => ({ ...p, leads: [lead, ...p.leads] }))}
       />
 
-      {/* Notify dialog — bigger; vertical top block: To / Language / From (labels removed) */}
+      {/* Notify — vertical, centered */}
       <Dialog open={notifyOpen} onOpenChange={setNotifyOpen}>
-        <DialogContent className="max-w-3xl h-auto">
-          <DialogHeader>
-            <DialogTitle>Notify</DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-3">
+        <DialogContent className="max-w-3xl">
+          <DialogHeader><DialogTitle className="text-center">Notify</DialogTitle></DialogHeader>
+
+          <div className="grid gap-3 place-items-center text-center">
             {notifyLead && (
               <>
-                <div className="grid gap-2">
-                  <div className="text-sm truncate">
-                    {notifyLead.email || "—"} {notifyLead.phone ? ` / ${notifyLead.phone}` : ""}
-                  </div>
-                  <div>
-                    <select
-                      className="h-9 border rounded-md px-2 w-full"
-                      value={notifyLang}
-                      onChange={(e) => {
-                        const lang = e.target.value;
-                        setNotifyLang(lang);
-                        const base =
-                          TPL[notifyStage === "interview"
-                            ? "interview"
-                            : notifyStage === "formation"
-                            ? "formation"
-                            : "call"];
-                        setNotifyText(compileTemplate(base[lang], notifyLead));
-                      }}
-                    >
-                      <option value="lb">Lëtzebuergesch</option>
-                      <option value="fr">Français</option>
-                      <option value="de">Deutsch</option>
-                    </select>
-                  </div>
-                  <div className="text-sm truncate">
-                    {getSettings().notifyFrom?.email} / {getSettings().notifyFrom?.phone}
-                  </div>
+                {/* To */}
+                <div className="text-sm truncate w-full">
+                  {notifyLead.email || "—"} {notifyLead.phone ? ` / ${notifyLead.phone}` : ""}
                 </div>
 
+                {/* Language */}
+                <div className="w-full max-w-sm">
+                  <select
+                    className="h-9 border rounded-md px-2 w-full text-center"
+                    value={notifyLang}
+                    onChange={(e) => {
+                      const lang = e.target.value;
+                      setNotifyLang(lang);
+                      const base = TPL[
+                        notifyStage === "interview" ? "interview" :
+                        notifyStage === "formation" ? "formation" : "call"
+                      ];
+                      setNotifyText(compileTemplate(base[lang], notifyLead));
+                    }}
+                  >
+                    <option value="lb">Lëtzebuergesch</option>
+                    <option value="fr">Français</option>
+                    <option value="de">Deutsch</option>
+                  </select>
+                </div>
+
+                {/* From */}
+                <div className="text-sm truncate w-full">
+                  {getSettings().notifyFrom?.email} / {getSettings().notifyFrom?.phone}
+                </div>
+
+                {/* Message */}
                 <textarea
                   className="border rounded-md p-2 w-full h-64"
                   value={notifyText}
@@ -786,13 +764,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
               </>
             )}
           </div>
-          <DialogFooter className="justify-end gap-2">
-            <Button variant="outline" onClick={() => setNotifyOpen(false)}>
-              Cancel
-            </Button>
-            <Button style={{ background: "black", color: "white" }} onClick={sendNotify}>
-              Send
-            </Button>
+
+          <DialogFooter className="justify-center gap-2">
+            <Button variant="outline" onClick={() => setNotifyOpen(false)}>Cancel</Button>
+            <Button style={{ background: "black", color: "white" }} onClick={sendNotify}>Send</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
