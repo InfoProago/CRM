@@ -1,13 +1,13 @@
-// Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.2 refinements)
-//
-// What’s new in this patch:
-// • Time input narrower; Date+Time preserved when moving
-// • Notify bell in Interview/Formation only when date & time set; in Leads when Calls=3
-// • Date displays DD-MM-YYYY, accepts DD-MM-YYYY typing, stores as ISO
-// • New Lead placeholders; removed prefix invalid alert; Calls input smaller
-// • Columns aligned across all three sections (identical colgroup widths)
-// • Typing bug fixed (fully controlled inputs, no synthetic event cloning)
-// • Importer: JSON / NDJSON / CSV; detects PDF and explains clearly
+// Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.3)
+// • Date+Time persist across moves
+// • Bell space reserved in Actions always (no layout jump)
+// • Interview/Formation bell only when date & time present; Leads bell when Calls=3
+// • Date uses native calendar (type="date"); stores ISO; locale shows dd-mm-yyyy
+// • Time input narrower
+// • Column widths: 18 | 18 | 20 | 12 | 14 | 8 | 4 | 6 (Name..Actions)
+// • New Lead placeholders; Calls input smaller; removed prefix alert
+// • Notify modal bigger; top row: Language / To / From; 3 languages
+// • Importer: JSON/NDJSON/CSV; detects PDF cleanly
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -17,36 +17,28 @@ import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Upload, Trash2, Plus, ChevronUp, ChevronDown, Bell } from "lucide-react";
-
 import * as U from "../util.js";
-const {
-  titleCase, clone, fmtISO, fmtUK,
-  addAuditLog, load, K, DEFAULT_SETTINGS,
-} = U;
+
+const { titleCase, clone, fmtISO, addAuditLog, load, K, DEFAULT_SETTINGS } = U;
+
+const COLS = [
+  { w: "18%" }, // Name
+  { w: "18%" }, // Mobile
+  { w: "20%" }, // Email
+  { w: "12%" }, // Source
+  { w: "14%" }, // Date
+  { w: "8%"  }, // Time
+  { w: "4%"  }, // Calls
+  { w: "6%"  }, // Actions (includes reserved bell space)
+];
 
 const PREFIXES = ["+352", "+33", "+32", "+49"];
 
-// ---------- Date helpers (DD-MM-YYYY <-> ISO) ----------
-function parseDDMMtoISO(s) {
-  // accepts "dd-mm-yyyy" or "dd/mm/yyyy"
-  const m = String(s || "").match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
-  if (!m) return "";
-  const dd = m[1].padStart(2, "0");
-  const mm = m[2].padStart(2, "0");
-  const yyyy = m[3];
-  return `${yyyy}-${mm}-${dd}`;
-}
-function toDDMM(isoOrEmpty) {
-  if (!isoOrEmpty) return "";
-  return fmtUK(isoOrEmpty);
-}
-
-// ---------- Country phone display (non-strict; you can edit later) ----------
+// Lightweight country formatter for New Lead (non-strict so you can edit later)
 function formatPhoneByCountry(prefix, localDigits) {
   const d = String(localDigits || "").replace(/\D+/g, "");
   switch (prefix) {
     case "+352": {
-      // +352 691 999 999 (best-effort spacing)
       let out = "+352";
       if (d.length) out += " " + d.slice(0, 3);
       if (d.length > 3) out += " " + d.slice(3, 6);
@@ -54,7 +46,6 @@ function formatPhoneByCountry(prefix, localDigits) {
       return out;
     }
     case "+33": {
-      // +33 6 12 34 56 78 (approx)
       const body = d.replace(/^0/, "");
       let out = "+33";
       if (body.length) out += " " + body.slice(0, 1);
@@ -65,7 +56,6 @@ function formatPhoneByCountry(prefix, localDigits) {
       return out;
     }
     case "+32": {
-      // +32 470 12 34 56 (approx)
       const body = d.replace(/^0/, "");
       let out = "+32";
       if (body.length) out += " " + body.slice(0, 3);
@@ -75,7 +65,6 @@ function formatPhoneByCountry(prefix, localDigits) {
       return out;
     }
     case "+49": {
-      // +49 1512 345 6789 (approx)
       const body = d.replace(/^0/, "");
       let out = "+49";
       if (body.length) out += " " + body.slice(0, 4);
@@ -92,12 +81,12 @@ function getSettings() {
   const s = load(K.settings, DEFAULT_SETTINGS) || {};
   const notifyFrom = {
     email: s.notifyFrom?.email || "noreply@proago.com",
-    phone: s.notifyFrom?.phone || "+352 691 337 633",
+    phone: s.notifyFrom?.phone || "+352 691 337 633", // your default
   };
   return { ...s, notifyFrom };
 }
 
-// ---------- Templates (LUX / FR / DE) ----------
+// -------- Templates (LB/FR/DE) --------
 const TPL = {
   call: {
     lb: `Moien {name},
@@ -225,19 +214,22 @@ CEO von Proago`,
 };
 
 function compileTemplate(tpl, lead) {
-  const d = lead.date ? toDDMM(lead.date) : "(dd-mm-yyyy)";
+  const iso = lead.date || "";
+  const ddmm = iso ? new Date(iso).toLocaleDateString("en-GB") : "(dd-mm-yyyy)";
   const t = lead.time || "(time)";
-  return (tpl || "").replaceAll("{name}", titleCase(lead.name || "")).replaceAll("{date}", d).replaceAll("{time}", t);
+  return (tpl || "")
+    .replaceAll("{name}", titleCase(lead.name || ""))
+    .replaceAll("{date}", ddmm)
+    .replaceAll("{time}", t);
 }
 
-// Leads bell appears if Calls>=3; Interview/Formation only if date & time set
 function shouldShowBell(stage, lead) {
   if (stage === "leads") return (lead.calls ?? 0) >= 3;
-  if (stage === "interview" || stage === "formation") return !!(lead.date && lead.time);
+  if (stage === "interview" || stage === "formation") return Boolean(lead.date && lead.time);
   return false;
 }
 
-// ---------- New Lead Dialog ----------
+// -------- New Lead Dialog --------
 const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
   const [name, setName] = useState("");
   const [prefix, setPrefix] = useState("+352");
@@ -255,13 +247,8 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
   const save = () => {
     const nm = titleCase(name);
     if (!nm) return alert("Name required.");
-
-    if (!builtPhone && !email.trim()) {
-      return alert("At least Mobile or Email is required.");
-    }
-    if (email && !email.includes("@")) {
-      return alert("Email must contain '@'.");
-    }
+    if (!builtPhone && !email.trim()) return alert("At least Mobile or Email is required.");
+    if (email && !email.includes("@")) return alert("Email must contain '@'.");
 
     const now = new Date();
     const lead = {
@@ -277,7 +264,6 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
     onSave(lead);
     addAuditLog({ area: "Inflow", action: "Add Lead", lead: { id: lead.id, name: lead.name, source: lead.source } });
     onOpenChange(false);
-    // reset
     setName(""); setPrefix("+352"); setLocalMobile(""); setEmail(""); setSource("Indeed"); setCalls(0);
   };
 
@@ -323,7 +309,7 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
 
           <div className="grid gap-1">
             <Label>Calls (0–3)</Label>
-            <div className="w-14">
+            <div className="w-12">
               <Input
                 inputMode="numeric"
                 value={String(calls)}
@@ -345,24 +331,21 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
   );
 };
 
-// ---------- Main ----------
 export default function Inflow({ pipeline, setPipeline, onHire }) {
   const fileRef = useRef(null);
   const [addOpen, setAddOpen] = useState(false);
 
-  // Notify
+  // Notify state
   const [notifyOpen, setNotifyOpen] = useState(false);
   const [notifyText, setNotifyText] = useState("");
   const [notifyLead, setNotifyLead] = useState(null);
   const [notifyStage, setNotifyStage] = useState(null);
   const [notifyLang, setNotifyLang] = useState("lb"); // lb | fr | de
 
-  const stableUpdate = (updater) => {
-    setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
-  };
+  const stableUpdate = (updater) => setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
 
   const move = (item, from, to) => {
-    // Keep date/time when moving; do not reset
+    // Keep date/time as-is when moving
     stableUpdate((next) => {
       next[from] = next[from].filter((x) => x.id !== item.id);
       next[to].push({ ...item });
@@ -386,9 +369,8 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     addAuditLog({ area: "Inflow", action: "Hire", lead: { id: item.id, name: item.name }, crewCode: code });
   };
 
-  // ---------- Import: JSON / NDJSON / CSV; detect PDF ----------
+  // -------- Import: JSON / NDJSON / CSV; detect PDF --------
   const parseMaybeCSV = (txt) => {
-    // very small CSV parser for common fields
     const lines = txt.split(/\r?\n/).filter(Boolean);
     if (lines.length < 2) return [];
     const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
@@ -416,7 +398,8 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     email: (j.email || "").trim(),
     source: j.source || "Indeed",
     calls: Math.min(Math.max(Number(j.calls || 0), 0), 3),
-    date: j.date ? (j.date.includes("-") ? parseDDMMtoISO(toDDMM(j.date)) : parseDDMMtoISO(j.date)) || fmtISO(new Date()) : fmtISO(new Date()),
+    // If JSON already has an ISO date, keep it; if it's something else, default to today
+    date: j.date && /^\d{4}-\d{2}-\d{2}$/.test(j.date) ? j.date : fmtISO(new Date()),
     time: j.time || new Date().toTimeString().slice(0, 5),
   });
 
@@ -424,44 +407,34 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     if (!file) return;
     try {
       const txt = await file.text();
-
-      // 1) Quick PDF detection (your "indeed test 1/2.json" are PDFs, not JSON)
       if (txt.startsWith("%PDF")) {
-        alert("This file is a PDF, not a JSON/CSV export. Please export candidates as JSON or CSV from Indeed.");
+        alert("This file is a PDF, not a JSON/CSV export. Export candidates from Indeed as JSON or CSV.");
         return;
       }
 
       let rows = [];
 
-      // 2) Try pure JSON array
+      // Try JSON
       try {
-        const asJson = JSON.parse(txt);
-        if (Array.isArray(asJson)) rows = asJson;
-        else if (asJson?.results && Array.isArray(asJson.results)) rows = asJson.results;
-        else if (asJson?.candidates && Array.isArray(asJson.candidates)) rows = asJson.candidates;
+        const js = JSON.parse(txt);
+        if (Array.isArray(js)) rows = js;
+        else if (Array.isArray(js?.results)) rows = js.results;
+        else if (Array.isArray(js?.candidates)) rows = js.candidates;
       } catch {
-        // 3) Try NDJSON (one JSON per line)
-        const mayND = txt.trim().split(/\n+/).filter(Boolean);
-        if (mayND.length > 1) {
-          const nd = [];
-          for (const line of mayND) {
-            try { nd.push(JSON.parse(line)); } catch {}
-          }
-          if (nd.length) rows = nd;
-        }
+        // Try NDJSON
+        const lines = txt.trim().split(/\n+/).filter(Boolean);
+        const maybe = [];
+        for (const line of lines) { try { maybe.push(JSON.parse(line)); } catch {} }
+        if (maybe.length) rows = maybe;
       }
 
-      // 4) Try CSV if still empty
+      // Try CSV
       if (!rows.length && txt.includes(",") && txt.includes("\n")) {
         rows = parseMaybeCSV(txt);
       }
 
-      if (!rows.length) {
-        alert("Could not parse the file. Please upload an Indeed JSON/CSV export.");
-        return;
-      }
+      if (!rows.length) { alert("Could not parse the file. Please upload an Indeed JSON/CSV export."); return; }
 
-      // map common fields
       const leads = rows
         .map((row) => {
           const name = row.name || row.full_name || row.candidate || `${row.first_name || ""} ${row.last_name || ""}`.trim();
@@ -476,23 +449,21 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         .filter((j) => j.name && (j.phone || j.email))
         .map(normalizeLead);
 
-      if (!leads.length) {
-        alert("No valid leads found in file.");
-        return;
-      }
+      if (!leads.length) { alert("No valid leads found in file."); return; }
 
       setPipeline((p) => ({ ...p, leads: [...leads, ...p.leads] }));
       addAuditLog({ area: "Inflow", action: "Import", source: "Indeed", count: leads.length });
       alert(`Imported ${leads.length} lead(s).`);
     } catch (e) {
       console.error(e);
-      alert("Import failed. Please use an Indeed JSON/CSV export.");
+      alert("Import failed. Please use an Indeed JSON or CSV export.");
     }
   };
 
-  // ---------- Notify ----------
+  // -------- Notify --------
   const openNotify = (lead, stage) => {
-    const base = TPL[stage === "interview" ? "interview" : stage === "formation" ? "formation" : "call"];
+    const base =
+      TPL[stage === "interview" ? "interview" : stage === "formation" ? "formation" : "call"];
     const text = compileTemplate(base[notifyLang], lead);
     setNotifyText(text);
     setNotifyLead(lead);
@@ -518,18 +489,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     setNotifyStage(null);
   };
 
-  // ---------- Table section (identical widths across all) ----------
-  const COLS = [
-    { w: "18%" }, // Name
-    { w: "20%" }, // Mobile
-    { w: "18%" }, // Email
-    { w: "12%" }, // Source
-    { w: "14%" }, // Date
-    { w: "12%" }, // Time
-    { w: "6%"  }, // Calls (only in Leads; empty col elsewhere keeps symmetry)
-    { w: "10%" }, // Actions
-  ];
-
+  // -------- Table section (identical widths across all) --------
   const Section = ({ title, keyName, prev, nextKey, extra, showCalls }) => (
     <Card className="border-2">
       <CardHeader>
@@ -599,17 +559,15 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                     {/* Source */}
                     <td className="p-3 text-center">{x.source}</td>
 
-                    {/* Date (DD-MM-YYYY) */}
+                    {/* Date (native calendar; stores ISO) */}
                     <td className="p-3">
                       <Input
-                        type="text"
-                        placeholder="dd-mm-yyyy"
-                        value={toDDMM(x.date) || ""}
+                        type="date"
+                        value={x.date || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
-                            const iso = parseDDMMtoISO(e.target.value) || "";
                             p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, date: iso } : it
+                              it.id === x.id ? { ...it, date: e.target.value } : it
                             );
                           })
                         }
@@ -620,7 +578,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                     <td className="p-3">
                       <Input
                         type="time"
-                        className="w-24 pr-2"
+                        className="w-20 pr-2"
                         value={x.time || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
@@ -632,10 +590,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       />
                     </td>
 
-                    {/* Calls (only meaningful in Leads; keep empty box for symmetry otherwise) */}
+                    {/* Calls (only meaningful in Leads; keep blank for others to preserve column) */}
                     <td className="p-3 text-center">
                       {showCalls ? (
-                        <div className="w-12 mx-auto">
+                        <div className="w-10 mx-auto">
                           <Input
                             inputMode="numeric"
                             value={String(x.calls ?? 0)}
@@ -650,11 +608,13 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                           />
                         </div>
                       ) : (
-                        <div /> // empty cell but same width
+                        <div />
                       )}
                     </td>
 
-                    <td className="p-3 flex gap-1 justify-end">
+                    {/* Actions: reserve bell slot always for perfect alignment */}
+                    <td className="p-3 flex gap-1 justify-end items-center">
+                      {/* Back/Forward */}
                       {prev && (
                         <Button size="sm" variant="outline" title="Back" onClick={() => move(x, keyName, prev)}>
                           <ChevronUp className="h-4 w-4" />
@@ -665,8 +625,9 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                           <ChevronDown className="h-4 w-4" />
                         </Button>
                       )}
-                      {extra && extra(x)}
-                      {showBell && (
+
+                      {/* Reserved bell slot: actual or invisible placeholder */}
+                      {showBell ? (
                         <Button
                           size="sm"
                           variant="outline"
@@ -676,7 +637,14 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                         >
                           <Bell className="h-4 w-4" color="white" />
                         </Button>
+                      ) : (
+                        <span className="inline-block w-[34px] h-[30px]" aria-hidden="true" />
                       )}
+
+                      {/* Extra per-row (e.g., Hire in Formation) */}
+                      {typeof extra === "function" && extra(x)}
+
+                      {/* Delete */}
                       <Button size="sm" variant="destructive" onClick={() => del(x, keyName)}>
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -740,37 +708,38 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         onSave={(lead) => setPipeline((p) => ({ ...p, leads: [lead, ...p.leads] }))}
       />
 
-      {/* Notify dialog (with language) */}
+      {/* Notify dialog (bigger; top row Language/To/From) */}
       <Dialog open={notifyOpen} onOpenChange={setNotifyOpen}>
-        <DialogContent className="max-w-xl h-auto">
+        <DialogContent className="max-w-3xl h-auto">
           <DialogHeader><DialogTitle>Notify</DialogTitle></DialogHeader>
           <div className="grid gap-3">
             {notifyLead && (
               <>
-                <div className="flex items-center gap-3 text-sm">
-                  <div>Lang:</div>
-                  <select
-                    className="h-9 border rounded-md px-2"
-                    value={notifyLang}
-                    onChange={(e) => {
-                      const lang = e.target.value;
-                      setNotifyLang(lang);
-                      const base = TPL[notifyStage === "interview" ? "interview" : notifyStage === "formation" ? "formation" : "call"];
-                      setNotifyText(compileTemplate(base[lang], notifyLead));
-                    }}
-                  >
-                    <option value="lb">Lëtzebuergesch</option>
-                    <option value="fr">Français</option>
-                    <option value="de">Deutsch</option>
-                  </select>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-sm items-center">
+                  <div className="flex items-center gap-2">
+                    <div className="whitespace-nowrap">Language:</div>
+                    <select
+                      className="h-9 border rounded-md px-2 w-full"
+                      value={notifyLang}
+                      onChange={(e) => {
+                        const lang = e.target.value;
+                        setNotifyLang(lang);
+                        const base =
+                          TPL[notifyStage === "interview" ? "interview" : notifyStage === "formation" ? "formation" : "call"];
+                        setNotifyText(compileTemplate(base[lang], notifyLead));
+                      }}
+                    >
+                      <option value="lb">Lëtzebuergesch</option>
+                      <option value="fr">Français</option>
+                      <option value="de">Deutsch</option>
+                    </select>
+                  </div>
+                  <div className="truncate">To: {notifyLead.email || "—"} {notifyLead.phone ? ` / ${notifyLead.phone}` : ""}</div>
+                  <div className="truncate">From: {getSettings().notifyFrom?.email} / {getSettings().notifyFrom?.phone}</div>
                 </div>
 
-                <div className="text-sm">
-                  To: {notifyLead.email || "—"} {notifyLead.phone ? ` / ${notifyLead.phone}` : ""}
-                </div>
-                <div className="text-sm">From: {getSettings().notifyFrom?.email} / {getSettings().notifyFrom?.phone}</div>
                 <textarea
-                  className="border rounded-md p-2 w-full h-48"
+                  className="border rounded-md p-2 w-full h-64"
                   value={notifyText}
                   onChange={(e) => setNotifyText(e.target.value)}
                 />
