@@ -1,12 +1,10 @@
-// src/pages/Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.6)
-// • Columns perfectly aligned across all sections
-// • Actions order: Bell • Up • Down • Trash (4 fixed slots, always reserved)
-// • Buttons uniform 36x36px
-// • Date & Time centered; Interview/Formation reset date/time on move
-// • Modals compact: New Lead (max-w-md), Notify (max-w-lg); stacked & centered
-// • New Lead Save button: black with white text
-// • Notifications compile dates as dd/mm/yyyy; inputs keep native date picker
-// • Import tolerant (JSON/NDJSON/CSV)
+// src/pages/Inflow.jsx — Proago CRM (v2025-09-03 • Step 2.7)
+// Changes in this patch:
+// • Notify modal: removed To/From lines; keep Language + textarea (centered, compact)
+// • New Lead modal title: "Lead"
+// • Perfect column symmetry via identical <colgroup> and 4 fixed action slots in all sections
+// • Formation: Down button restored; triggers Hire flow (crewcode + onHire), then removes from Formation
+// • Date inputs visually centered (webkit datetime edit CSS helper)
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -20,7 +18,7 @@ import * as U from "../util.js";
 
 const { titleCase, clone, fmtISO, addAuditLog, load, K, DEFAULT_SETTINGS } = U;
 
-// Column widths (identical everywhere)
+// --- col widths identical in all sections ---
 const COLS = [
   { w: "18%" }, // Name
   { w: "18%" }, // Mobile
@@ -32,75 +30,45 @@ const COLS = [
   { w: "8%"  }, // Actions
 ];
 
-// Fixed action button sizing
-const BTN_W = 36;
-const BTN_H = 36;
+// fixed-size action slots (so rows never shift)
+const BTN_W = 36, BTN_H = 36;
 const BtnSlot = ({ children }) =>
-  children ? (
-    children
-  ) : (
-    <span
-      className="inline-block"
-      style={{ width: BTN_W, height: BTN_H }}
-      aria-hidden="true"
-    />
-  );
+  children ? children : <span className="inline-block" style={{ width: BTN_W, height: BTN_H }} aria-hidden="true" />;
+
+// inject a tiny style rule once to center native date text
+const DateCenterStyle = () => (
+  <style>{`
+    /* Center date text inside native pickers (WebKit/Blink) */
+    input.date-center::-webkit-datetime-edit { text-align: center; }
+    input.date-center { text-align: center; }
+  `}</style>
+);
 
 const PREFIXES = ["+352", "+33", "+32", "+49"];
 
-// Light phone formatter for New Lead only
 function formatPhoneByCountry(prefix, localDigits) {
   const d = String(localDigits || "").replace(/\D+/g, "");
   switch (prefix) {
-    case "+352": {
-      let out = "+352";
-      if (d.length) out += " " + d.slice(0, 3);
-      if (d.length > 3) out += " " + d.slice(3, 6);
-      if (d.length > 6) out += " " + d.slice(6, 9);
-      return out;
-    }
-    case "+33": {
-      const body = d.replace(/^0/, "");
-      let out = "+33";
-      if (body.length) out += " " + body.slice(0, 1);
-      if (body.length > 1) out += " " + body.slice(1, 3);
-      if (body.length > 3) out += " " + body.slice(3, 5);
-      if (body.length > 5) out += " " + body.slice(5, 7);
-      if (body.length > 7) out += " " + body.slice(7, 9);
-      return out;
-    }
-    case "+32": {
-      const body = d.replace(/^0/, "");
-      let out = "+32";
-      if (body.length) out += " " + body.slice(0, 3);
-      if (body.length > 3) out += " " + body.slice(3, 5);
-      if (body.length > 5) out += " " + body.slice(5, 7);
-      if (body.length > 7) out += " " + body.slice(7, 9);
-      return out;
-    }
-    case "+49": {
-      const body = d.replace(/^0/, "");
-      let out = "+49";
-      if (body.length) out += " " + body.slice(0, 4);
-      if (body.length > 4) out += " " + body.slice(4, 7);
-      if (body.length > 7) out += " " + body.slice(7, 11);
-      return out;
-    }
-    default:
-      return `${prefix} ${d}`.trim();
+    case "+352": { let o = "+352"; if (d) o += " " + d.slice(0,3); if (d.length>3) o += " " + d.slice(3,6); if (d.length>6) o += " " + d.slice(6,9); return o; }
+    case "+33": { const b = d.replace(/^0/,""); let o = "+33"; if (b) o += " " + b.slice(0,1); if (b.length>1) o += " " + b.slice(1,3); if (b.length>3) o += " " + b.slice(3,5); if (b.length>5) o += " " + b.slice(5,7); if (b.length>7) o += " " + b.slice(7,9); return o; }
+    case "+32": { const b = d.replace(/^0/,""); let o = "+32"; if (b) o += " " + b.slice(0,3); if (b.length>3) o += " " + b.slice(3,5); if (b.length>5) o += " " + b.slice(5,7); if (b.length>7) o += " " + b.slice(7,9); return o; }
+    case "+49": { const b = d.replace(/^0/,""); let o = "+49"; if (b) o += " " + b.slice(0,4); if (b.length>4) o += " " + b.slice(4,7); if (b.length>7) o += " " + b.slice(7,11); return o; }
+    default: return `${prefix} ${d}`.trim();
   }
 }
 
 function getSettings() {
   const s = load(K.settings, DEFAULT_SETTINGS) || {};
-  const notifyFrom = {
-    email: s.notifyFrom?.email || "noreply@proago.com",
-    phone: s.notifyFrom?.phone || "+352 691 337 633",
+  return {
+    ...s,
+    notifyFrom: {
+      email: s.notifyFrom?.email || "noreply@proago.com",
+      phone: s.notifyFrom?.phone || "+352 691 337 633",
+    },
   };
-  return { ...s, notifyFrom };
 }
 
-// Templates (LB/FR/DE) — compiled as dd/mm/yyyy in messages
+// ---- Templates (LB/FR/DE) with dd/mm/yyyy rendering ----
 const TPL = {
   call: {
     lb: `Moien {name},
@@ -228,8 +196,7 @@ CEO von Proago`,
 };
 
 function compileTemplate(tpl, lead) {
-  const iso = lead.date || "";
-  const ddmm = iso ? new Date(iso).toLocaleDateString("en-GB") : "(dd/mm/yyyy)";
+  const ddmm = lead.date ? new Date(lead.date).toLocaleDateString("en-GB") : "(dd/mm/yyyy)";
   const t = lead.time || "(time)";
   return (tpl || "")
     .replaceAll("{name}", titleCase(lead.name || ""))
@@ -254,8 +221,7 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
 
   const builtPhone = useMemo(() => {
     const digits = (localMobile || "").replace(/\D+/g, "");
-    if (!digits) return "";
-    return formatPhoneByCountry(prefix, digits);
+    return digits ? formatPhoneByCountry(prefix, digits) : "";
   }, [prefix, localMobile]);
 
   const save = () => {
@@ -283,10 +249,8 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle className="text-center">New Lead</DialogTitle>
-        </DialogHeader>
+      <DialogContent size="md">
+        <DialogHeader><DialogTitle className="text-center">Lead</DialogTitle></DialogHeader>
 
         <div className="grid gap-3 text-center items-center">
           <div className="grid gap-1">
@@ -365,7 +329,6 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
 
   const move = (item, from, to) => {
-    // Reset date/time when moving to interview or formation
     const reset = to === "interview" || to === "formation";
     stableUpdate((next) => {
       next[from] = next[from].filter((x) => x.id !== item.id);
@@ -374,13 +337,23 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     addAuditLog({ area: "Inflow", action: "Move", from, to, lead: { id: item.id, name: item.name } });
   };
 
+  const hireFromFormation = (item) => {
+    let code = prompt("Crewcode (5 digits):");
+    if (!code) return;
+    code = String(code).trim();
+    if (!/^\d{5}$/.test(code)) { alert("Crewcode must be exactly 5 digits."); return; }
+    onHire({ ...item, crewCode: code, role: "Rookie" });
+    stableUpdate((next) => { next.formation = next.formation.filter((x) => x.id !== item.id); });
+    addAuditLog({ area: "Inflow", action: "Hire", lead: { id: item.id, name: item.name }, crewCode: code });
+  };
+
   const del = (item, from) => {
     if (!confirm("Delete?")) return;
     stableUpdate((next) => { next[from] = next[from].filter((x) => x.id !== item.id); });
     addAuditLog({ area: "Inflow", action: "Delete Lead", from, lead: { id: item.id, name: item.name } });
   };
 
-  // Import: JSON / NDJSON / CSV (tolerant)
+  // Importers (JSON/NDJSON/CSV)
   const parseMaybeCSV = (txt) => {
     const lines = txt.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     if (lines.length < 2) return [];
@@ -417,7 +390,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     if (!file) return;
     try {
       let txt = await file.text();
-      txt = txt.replace(/^\uFEFF/, ""); // strip BOM
+      txt = txt.replace(/^\uFEFF/, "");
       let rows = [];
 
       try {
@@ -434,7 +407,6 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       }
 
       if (!rows.length && txt.includes(",") && txt.includes("\n")) rows = parseMaybeCSV(txt);
-
       if (!rows.length) { alert("Could not parse this file. Please upload an Indeed JSON/CSV export."); return; }
 
       const leads = rows
@@ -465,8 +437,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
   // Notify
   const openNotify = (lead, stage) => {
     const base = TPL[stage === "interview" ? "interview" : stage === "formation" ? "formation" : "call"];
-    const text = compileTemplate(base[notifyLang], lead);
-    setNotifyText(text);
+    setNotifyText(compileTemplate(base[notifyLang], lead));
     setNotifyLead(lead);
     setNotifyStage(stage);
     setNotifyOpen(true);
@@ -491,7 +462,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
   };
 
   // Section renderer
-  const Section = ({ title, keyName, prev, nextKey, showCalls }) => (
+  const Section = ({ title, keyName, prev, nextKey, showCalls, enableHireDown }) => (
     <Card className="border-2">
       <CardHeader>
         <CardTitle className="flex justify-between items-center">
@@ -554,11 +525,11 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                     {/* Source */}
                     <td className="p-3 text-center">{x.source}</td>
 
-                    {/* Date — centered */}
+                    {/* Date (centered via class + CSS helper) */}
                     <td className="p-3">
                       <Input
                         type="date"
-                        className="text-center"
+                        className="date-center"
                         value={x.date || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
@@ -568,11 +539,11 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       />
                     </td>
 
-                    {/* Time — centered */}
+                    {/* Time (centered) */}
                     <td className="p-3">
                       <Input
                         type="time"
-                        className="w-20 pr-2 text-center"
+                        className="text-center w-20 pr-2"
                         value={x.time || ""}
                         onChange={(e) =>
                           stableUpdate((p) => {
@@ -582,7 +553,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       />
                     </td>
 
-                    {/* Calls — only editable in Leads */}
+                    {/* Calls — only in Leads */}
                     <td className="p-3 text-center">
                       {showCalls ? (
                         <div className="w-10 mx-auto">
@@ -603,7 +574,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       )}
                     </td>
 
-                    {/* Actions — Bell • Up • Down • Trash — fixed-size slots */}
+                    {/* Actions — Bell • Up • Down • Trash */}
                     <td className="p-3 flex gap-2 justify-end items-center">
                       {/* Bell */}
                       <BtnSlot>
@@ -612,9 +583,9 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                             size="sm"
                             variant="outline"
                             title="Notify"
-                            onClick={() => openNotify(x, stage)}
                             className="p-0"
                             style={{ background: "black", color: "white", width: BTN_W, height: BTN_H }}
+                            onClick={() => openNotify(x, stage)}
                           >
                             <Bell className="h-4 w-4" color="white" />
                           </Button>
@@ -628,29 +599,29 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                             size="sm"
                             variant="outline"
                             title="Back"
-                            onClick={() => move(x, keyName, prev)}
                             className="p-0"
                             style={{ width: BTN_W, height: BTN_H }}
+                            onClick={() => move(x, keyName, prev)}
                           >
                             <ChevronUp className="h-4 w-4" />
                           </Button>
                         )}
                       </BtnSlot>
 
-                      {/* Down */}
+                      {/* Down (in Formation -> Hire) */}
                       <BtnSlot>
-                        {nextKey && (
+                        {nextKey || enableHireDown ? (
                           <Button
                             size="sm"
                             variant="outline"
-                            title="Move"
-                            onClick={() => move(x, keyName, nextKey)}
+                            title={enableHireDown ? "Hire" : "Move"}
                             className="p-0"
                             style={{ width: BTN_W, height: BTN_H }}
+                            onClick={() => (enableHireDown ? hireFromFormation(x) : move(x, keyName, nextKey))}
                           >
                             <ChevronDown className="h-4 w-4" />
                           </Button>
-                        )}
+                        ) : null}
                       </BtnSlot>
 
                       {/* Trash */}
@@ -658,9 +629,9 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                         <Button
                           size="sm"
                           variant="destructive"
-                          onClick={() => del(x, keyName)}
                           className="p-0"
                           style={{ width: BTN_W, height: BTN_H }}
+                          onClick={() => del(x, keyName)}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -678,6 +649,8 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
 
   return (
     <div className="grid gap-4">
+      <DateCenterStyle />
+
       {/* Toolbar */}
       <div className="flex justify-between items-center">
         <div />
@@ -698,9 +671,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         </div>
       </div>
 
+      {/* Sections */}
       <Section title="Leads" keyName="leads" nextKey="interview" showCalls />
       <Section title="Interview" keyName="interview" prev="leads" nextKey="formation" showCalls={false} />
-      <Section title="Formation" keyName="formation" prev="interview" showCalls={false} />
+      <Section title="Formation" keyName="formation" prev="interview" showCalls={false} enableHireDown />
 
       {/* New Lead */}
       <AddLeadDialog
@@ -709,25 +683,14 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         onSave={(lead) => setPipeline((p) => ({ ...p, leads: [lead, ...p.leads] }))}
       />
 
-      {/* Notify — compact, stacked: To → From → Language */}
+      {/* Notify — compact; only Language + Message */}
       <Dialog open={notifyOpen} onOpenChange={setNotifyOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent size="lg">
           <DialogHeader><DialogTitle className="text-center">Notify</DialogTitle></DialogHeader>
 
           <div className="grid gap-3 place-items-center text-center">
             {notifyLead && (
               <>
-                {/* To */}
-                <div className="text-sm truncate w-full">
-                  {notifyLead.email || "—"} {notifyLead.phone ? ` / ${notifyLead.phone}` : ""}
-                </div>
-
-                {/* From */}
-                <div className="text-sm truncate w-full">
-                  {getSettings().notifyFrom?.email} / {getSettings().notifyFrom?.phone}
-                </div>
-
-                {/* Language (below From) */}
                 <div className="w-full max-w-xs">
                   <select
                     className="h-9 border rounded-md px-2 w-full text-center"
@@ -748,7 +711,6 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                   </select>
                 </div>
 
-                {/* Message */}
                 <textarea
                   className="border rounded-md p-2 w-full h-56"
                   value={notifyText}
