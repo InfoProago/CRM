@@ -1,227 +1,440 @@
-// Recruiters.jsx — Proago CRM (v2025-08-29f)
-// Changes:
-// • Scores oldest → left, newest → right
-// • Box 2/Box 4 labels cleaned (no % signs)
-// • Info dialog top row: Picture, Name, Crewcode, Rank, Mobile, Email, Source
-// • Monthly pay added
-// • Upload photo on left
-// • Include inactive toggle styled
-// • All-time Shifts table from history, newest first
-// • Adaptive column widths
+// src/pages/Recruiters.jsx — Proago CRM
+// v2025-09-04 • Recruiters: Active/All toggle, per-row status, color-coded Form/Box%, 2-dec Avg,
+//                Info modal (avatar add/remove, rename, History table w/ Game), pinned Info column, audit logging
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
-import { rankAcr, rankOrderVal, last5ScoresFor, boxPercentsLast8w, titleCase, toMoney } from "../util";
+import { Input } from "../components/ui/input";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Badge } from "../components/ui/badge";
+import { Info, UserPlus, UserX } from "lucide-react";
+import {
+  addAuditLog,
+  last5ScoresFor,
+  boxPercentsLast8w,
+  rankAcr,
+  rankOrderVal,
+  titleCase,
+  clone,
+} from "../util"; // uses helpers present in util.js  [oai_citation:0‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
 
-export default function Recruiters({ recruiters, setRecruiters, history }) {
-  const [selected, setSelected] = useState(null);
-  const [infoOpen, setInfoOpen] = useState(false);
-  const [includeInactive, setIncludeInactive] = useState(true);
+const COLS = [
+  { w: "24%" }, // Name
+  { w: "10%" }, // Role
+  { w: "20%" }, // Form (last 5)
+  { w: "10%" }, // Avg (2 dec)
+  { w: "10%" }, // Box 2%
+  { w: "10%" }, // Box 4%
+  { w: "8%"  }, // Info (pinned)
+  { w: "8%"  }, // Status toggle
+];
 
-  const openInfo = (rec) => { setSelected(rec); setInfoOpen(true); };
+// color helpers (Planning-like)
+const scoreColor = (n) => {
+  const s = Number(n) || 0;
+  if (s >= 3) return "bg-green-100 text-green-800 border-green-300";
+  if (s >= 2) return "bg-yellow-100 text-yellow-800 border-yellow-300";
+  return "bg-red-100 text-red-800 border-red-300";
+};
+const pctClassB2 = (p) => (p >= 70 ? "text-green-700" : "text-red-700");
+const pctClassB4 = (p) => (p >= 40 ? "text-green-700" : "text-red-700");
 
-  const scoresMap = useMemo(() => {
-    const m = new Map();
-    recruiters.forEach(r => m.set(r.id, last5ScoresFor(history, r.id)));
-    return m;
-  }, [recruiters, history]);
+// pill badge
+const Pill = ({ children, className = "" }) => (
+  <span className={`inline-flex items-center border rounded-full px-2 py-[2px] text-xs font-medium ${className}`}>{children}</span>
+);
 
-  const avg = (arr) => arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length) : 0;
+// History row score badge
+const ScoreBadge = ({ v }) => <Pill className={scoreColor(v)}>{Number(v || 0).toFixed(2)}</Pill>;
 
-  const sorted = useMemo(() => {
-    const arr = recruiters
-      .filter(r => includeInactive ? true : !r.isInactive)
-      .map(r => {
-        const form = scoresMap.get(r.id) || [];
-        const acr = rankAcr(r.role);
-        const box = boxPercentsLast8w(history, r.id);
-        return {
-          ...r,
-          _rankAcr: acr,
-          _rankOrder: rankOrderVal(acr),
-          _avg: avg(form),
-          _b2pct: box.b2 || 0,
-          _b4pct: box.b4 || 0,
-          _form: form.slice().reverse(), // oldest left, newest right
-        };
-      })
-      .sort((a,b) => {
-        if (b._rankOrder !== a._rankOrder) return b._rankOrder - a._rankOrder;
-        if (b._avg !== a._avg) return b._avg - a._avg;
-        if (b._b2pct !== a._b2pct) return b._b2pct - a._b2pct;
-        return b._b4pct - a._b4pct;
-      });
-    return arr;
-  }, [recruiters, includeInactive, scoresMap, history]);
+export default function Recruiters({ recruiters, setRecruiters, history, setHistory }) {
+  // Show Active by default (you asked for this)
+  const [showAll, setShowAll] = useState(false); // false = Active (default)
 
-  const InfoDialog = ({ rec }) => {
-    if (!rec) return null;
-    const rows = history
-      .filter(h => h.recruiterId === rec.id)
-      .sort((a,b)=> (a.dateISO < b.dateISO ? 1 : -1));
+  const fileRef = useRef(null);
 
-    const monthlyPay = rows.reduce((s,r)=> s + (Number(r.hours||0) * 15),0); // approx, uses flat 15/h unless you want rates
+  // derived rows with filters/sort (keep stable ordering: rank then name)
+  const rows = useMemo(() => {
+    const base = Array.isArray(recruiters) ? recruiters.slice() : [];
+    const filtered = showAll ? base : base.filter((r) => !r.isInactive);
+    return filtered.sort((a, b) => {
+      const ra = rankOrderVal(a.role), rb = rankOrderVal(b.role);
+      if (ra !== rb) return ra - rb;
+      return (a.name || "").localeCompare(b.name || "");
+    });
+  }, [recruiters, showAll]);
 
-    return (
-      <Dialog open={infoOpen} onOpenChange={setInfoOpen}>
-        <DialogContent className="w-[95vw] max-w-[1200px] h-[85vh] p-4">
-          <DialogHeader><DialogTitle>Info — {titleCase(rec.name)}</DialogTitle></DialogHeader>
-
-          {/* Top info row */}
-          <div className="flex flex-wrap items-center gap-4 border rounded-lg p-3 mb-3">
-            <div className="flex items-center gap-3">
-              {rec.photo && <img src={rec.photo} alt="profile" className="h-12 w-12 rounded object-cover" />}
-              <label className="text-sm border px-2 py-1 rounded-md bg-zinc-50 cursor-pointer">
-                Upload Photo
-                <input type="file" accept="image/*" className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                      setRecruiters(rs => rs.map(r => r.id === rec.id ? ({ ...r, photo: reader.result }) : r));
-                    };
-                    reader.readAsDataURL(file);
-                  }} />
-              </label>
-            </div>
-            <div><b>Name:</b> {titleCase(rec.name)}</div>
-            <div><b>Crewcode:</b> {rec.crewCode || "—"}</div>
-            <div><b>Rank:</b> {rankAcr(rec.role)}</div>
-            <div><b>Mobile:</b> {rec.phone || "—"}</div>
-            <div><b>Email:</b> {rec.email || "—"}</div>
-            <div><b>Source:</b> {rec.source || "—"}</div>
-            <div><b>Monthly Pay:</b> €{toMoney(monthlyPay)}</div>
-          </div>
-
-          {/* All-time shifts */}
-          <div className="border rounded-lg overflow-hidden">
-            <div className="px-3 py-2 bg-zinc-50 font-medium">All-time Shifts</div>
-            <div className="overflow-x-auto max-h-[55vh] overflow-y-auto">
-              <table className="min-w-full text-sm table-fixed">
-                <colgroup>
-                  <col style={{ width: "16%" }} /> {/* Date */}
-                  <col style={{ width: "18%" }} /> {/* Zone */}
-                  <col style={{ width: "14%" }} /> {/* Project */}
-                  <col style={{ width: "10%" }} /> {/* Hours */}
-                  <col style={{ width: "10%" }} /> {/* Mult */}
-                  <col style={{ width: "8%" }} />  {/* Score */}
-                  <col style={{ width: "8%" }} />  {/* Box 2 */}
-                  <col style={{ width: "8%" }} />  {/* Box 2* */}
-                  <col style={{ width: "8%" }} />  {/* Box 4 */}
-                  <col style={{ width: "8%" }} />  {/* Box 4* */}
-                </colgroup>
-                <thead className="bg-zinc-50">
-                  <tr>
-                    <th className="p-2 text-left">Date</th>
-                    <th className="p-2 text-left">Zone</th>
-                    <th className="p-2 text-left">Project</th>
-                    <th className="p-2 text-right">Hours</th>
-                    <th className="p-2 text-right">Mult</th>
-                    <th className="p-2 text-right">Score</th>
-                    <th className="p-2 text-right">Box 2</th>
-                    <th className="p-2 text-right">Box 2*</th>
-                    <th className="p-2 text-right">Box 4</th>
-                    <th className="p-2 text-right">Box 4*</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r, i) => (
-                    <tr key={`${r.dateISO}_${i}`} className="border-t">
-                      <td className="p-2">{r.dateISO}</td>
-                      <td className="p-2">{r.location || "—"}</td>
-                      <td className="p-2">{r.project || "Hello Fresh"}</td>
-                      <td className="p-2 text-right">{r.hours ?? ""}</td>
-                      <td className="p-2 text-right">{r.commissionMult ?? ""}</td>
-                      <td className="p-2 text-right">{r.score ?? ""}</td>
-                      <td className="p-2 text-right">{r.box2_noDisc ?? ""}</td>
-                      <td className="p-2 text-right">{r.box2_disc ?? ""}</td>
-                      <td className="p-2 text-right">{r.box4_noDisc ?? ""}</td>
-                      <td className="p-2 text-right">{r.box4_disc ?? ""}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+  // ---------- Mutators ----------
+  const toggleStatus = (rec) => {
+    setRecruiters((rs) =>
+      rs.map((r) => (r.id === rec.id ? { ...r, isInactive: !r.isInactive } : r))
     );
+    addAuditLog({ area: "Recruiters", action: "Toggle Status", recruiter: { id: rec.id, name: rec.name }, to: (!rec.isInactive ? "Inactive" : "Active") }); //  [oai_citation:1‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
   };
+
+  const rename = (id, newName) => {
+    setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, name: titleCase(newName || "") } : r)));
+    addAuditLog({ area: "Recruiters", action: "Rename", recruiter: { id, name: titleCase(newName || "") } }); //  [oai_citation:2‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+  };
+
+  const setAvatar = async (id, file) => {
+    if (!file) return;
+    const dataUrl = await toDataURL(file);
+    setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, avatar: dataUrl } : r)));
+    addAuditLog({ area: "Recruiters", action: "Set Avatar", recruiter: { id } }); //  [oai_citation:3‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+  };
+
+  const removeAvatar = (id) => {
+    setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, avatar: "" } : r)));
+    addAuditLog({ area: "Recruiters", action: "Remove Avatar", recruiter: { id } }); //  [oai_citation:4‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+  };
+
+  // ---------- Info Modal ----------
+  const [openInfo, setOpenInfo] = useState(false);
+  const [sel, setSel] = useState(null);
+
+  const openModal = (rec) => { setSel(rec); setOpenInfo(true); };
+  const closeModal = () => setOpenInfo(false);
+
+  // utilities
+  function last5(recId) {
+    return last5ScoresFor(history, recId); // array of numbers newest→oldest  [oai_citation:5‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+  }
+  function avg2(recId) {
+    const arr = last5(recId);
+    if (!arr.length) return "0.00";
+    const n = arr.reduce((a, b) => a + (Number(b) || 0), 0) / arr.length;
+    return n.toFixed(2);
+  }
+  function boxes(recId) {
+    return boxPercentsLast8w(history, recId); // { b2, b4 } in %  [oai_citation:6‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+  }
 
   return (
     <div className="grid gap-4">
-      <Card>
-        <CardHeader className="flex items-center justify-between">
-          <CardTitle>Recruiters</CardTitle>
-          <div className="flex items-center gap-2">
-            <span className="text-sm">Include Inactive</span>
-            <Button
-              size="sm"
-              style={{
-                background: includeInactive ? "#d9010b" : "white",
-                color: includeInactive ? "white" : "black",
-                border: "1px solid #d1d5db"
-              }}
-              onClick={() => setIncludeInactive(!includeInactive)}
-            >
-              {includeInactive ? "On" : "Off"}
-            </Button>
-          </div>
+      {/* Header with Active/All toggle (right) */}
+      <div className="flex items-center justify-between">
+        <div />
+        <div className="flex items-center gap-2">
+          {/* Active = white with black text */}
+          <Button
+            size="sm"
+            onClick={() => setShowAll(false)}
+            style={showAll ? { background: "white", color: "black", border: "1px solid #e5e7eb" } : { background: "white", color: "black", border: "2px solid black" }}
+          >
+            Active
+          </Button>
+          {/* All = black with white text */}
+          <Button
+            size="sm"
+            onClick={() => setShowAll(true)}
+            style={showAll ? { background: "black", color: "white" } : { background: "#111", color: "#fff", opacity: 0.75 }}
+          >
+            All
+          </Button>
+        </div>
+      </div>
+
+      <Card className="border-2">
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between">
+            <span>Recruiters</span>
+            <Badge>{rows.length}</Badge>
+          </CardTitle>
         </CardHeader>
+
         <CardContent>
           <div className="overflow-x-auto border rounded-xl">
             <table className="min-w-full text-sm table-fixed">
-              <colgroup>
-                <col style={{ width: "26%" }} /> {/* Name */}
-                <col style={{ width: "12%" }} /> {/* Rank */}
-                <col style={{ width: "16%" }} /> {/* Form */}
-                <col style={{ width: "12%" }} /> {/* Average */}
-                <col style={{ width: "16%" }} /> {/* Box 2 */}
-                <col style={{ width: "16%" }} /> {/* Box 4 */}
-                <col style={{ width: "12%" }} /> {/* Actions */}
-              </colgroup>
+              <colgroup>{COLS.map((c, i) => <col key={i} style={{ width: c.w }} />)}</colgroup>
               <thead className="bg-zinc-50">
                 <tr>
                   <th className="p-3 text-left">Name</th>
-                  <th className="p-3 text-center">Rank</th>
-                  <th className="p-3 text-center">Form</th>
-                  <th className="p-3 text-center">Average</th>
-                  <th className="p-3 text-center">Box 2</th>
-                  <th className="p-3 text-center">Box 4</th>
-                  <th className="p-3 text-right">Actions</th>
+                  <th className="p-3 text-center">Role</th>
+                  <th className="p-3 text-left">Form</th>
+                  <th className="p-3 text-center">Avg</th>
+                  <th className="p-3 text-center">Box 2%</th>
+                  <th className="p-3 text-center">Box 4%</th>
+                  <th className="p-3 text-center">Info</th>
+                  <th className="p-3 text-center">Status</th>
                 </tr>
               </thead>
+
               <tbody>
-                {sorted.map(r => (
-                  <tr key={r.id} className="border-t">
-                    <td className="p-3 font-medium text-left">{titleCase(r.name)}</td>
-                    <td className="p-3 text-center">{r._rankAcr}</td>
-                    <td className="p-3 text-center">{(r._form || []).join(" - ")}</td>
-                    <td className="p-3 text-center">{r._avg.toFixed(1)}</td>
-                    <td className="p-3 text-center">{r._b2pct.toFixed(1)}%</td>
-                    <td className="p-3 text-center">{r._b4pct.toFixed(1)}%</td>
-                    <td className="p-3 flex gap-2 justify-end">
-                      <Button size="sm" variant="outline" onClick={() => openInfo(r)}>Info</Button>
-                      <Button
-                        size="sm"
-                        style={{ background: r.isInactive ? "#10b981" : "black", color: "white" }}
-                        onClick={() => setRecruiters(rs => rs.map(x => x.id===r.id ? ({...x, isInactive: !x.isInactive}) : x))}
-                      >
-                        {r.isInactive ? "Activate" : "Deactivate"}
-                      </Button>
-                    </td>
+                {rows.map((r) => {
+                  const last = last5(r.id);
+                  const A = avg2(r.id);
+                  const { b2, b4 } = boxes(r.id);
+
+                  return (
+                    <tr key={r.id} className="border-t">
+                      {/* Name (editable inline) */}
+                      <td className="p-3">
+                        <Input
+                          value={r.name || ""}
+                          onChange={(e) => rename(r.id, e.target.value)}
+                        />
+                      </td>
+
+                      {/* Role (readable acronym) */}
+                      <td className="p-3 text-center">
+                        <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{rankAcr(r.role)}</Pill>
+                      </td>
+
+                      {/* Form = last 5 scores (colored) */}
+                      <td className="p-3">
+                        <div className="flex flex-wrap gap-1">
+                          {last.length ? (
+                            last.slice(0, 5).map((v, i) => <ScoreBadge key={i} v={v} />)
+                          ) : (
+                            <span className="text-zinc-400">No data</span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Average 2 decimals with Planning-like color */}
+                      <td className="p-3 text-center">
+                        <Pill className={scoreColor(A)}>{A}</Pill>
+                      </td>
+
+                      {/* Box 2% */}
+                      <td className="p-3 text-center">
+                        <span className={`font-semibold ${pctClassB2(b2)}`}>{b2}%</span>
+                      </td>
+
+                      {/* Box 4% */}
+                      <td className="p-3 text-center">
+                        <span className={`font-semibold ${pctClassB4(b4)}`}>{b4}%</span>
+                      </td>
+
+                      {/* Info button (pinned column) */}
+                      <td className="p-3 text-center">
+                        <Button size="sm" variant="outline" onClick={() => openModal(r)}>
+                          <Info className="h-4 w-4" />
+                        </Button>
+                      </td>
+
+                      {/* Status Active/Inactive with required styling */}
+                      <td className="p-3 text-center">
+                        {r.isInactive ? (
+                          <Button size="sm" onClick={() => toggleStatus(r)} style={{ background: "black", color: "white" }}>
+                            Inactive
+                          </Button>
+                        ) : (
+                          <Button size="sm" onClick={() => toggleStatus(r)} style={{ background: "white", color: "black", border: "1px solid #111" }}>
+                            Active
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {/* Ghost row keeps header widths even if no recruiters match filter */}
+                {rows.length === 0 && (
+                  <tr className="border-t opacity-0 select-none pointer-events-none">
+                    {COLS.map((_, i) => (
+                      <td key={i} className="p-3">
+                        <div className="h-10" />
+                      </td>
+                    ))}
                   </tr>
-                ))}
+                )}
               </tbody>
             </table>
           </div>
         </CardContent>
       </Card>
 
-      <InfoDialog rec={selected} />
+      {/* ---------- Info Modal ---------- */}
+      <Dialog open={openInfo} onOpenChange={setOpenInfo}>
+        <DialogContent className="max-w-[800px] h-auto">
+          {sel && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="text-center">Info • {sel.name || "Recruiter"}</DialogTitle>
+              </DialogHeader>
+
+              {/* Avatar + Rename */}
+              <div className="grid md:grid-cols-[160px_1fr] gap-4 items-start">
+                {/* Avatar */}
+                <div className="grid gap-2 place-items-center">
+                  <div className="h-28 w-28 rounded-full bg-zinc-200 overflow-hidden grid place-items-center">
+                    {sel.avatar ? (
+                      <img src={sel.avatar} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-zinc-500 text-sm">No photo</span>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      ref={fileRef}
+                      type="file"
+                      hidden
+                      accept="image/*"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) setAvatar(sel.id, f);
+                        e.target.value = "";
+                      }}
+                    />
+                    <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+                      <UserPlus className="h-4 w-4 mr-1" /> Add
+                    </Button>
+                    <Button size="sm" style={{ background: "black", color: "white" }} onClick={() => removeAvatar(sel.id)}>
+                      <UserX className="h-4 w-4 mr-1" /> Remove
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Rename + quick facts */}
+                <div className="grid gap-3">
+                  <div>
+                    <div className="text-sm font-medium mb-1">Name</div>
+                    <Input
+                      value={sel.name || ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        rename(sel.id, v);
+                        setSel((s) => ({ ...s, name: titleCase(v) }));
+                      }}
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap gap-3 items-center">
+                    <div>
+                      <div className="text-xs text-zinc-500">Role</div>
+                      <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{rankAcr(sel.role)}</Pill>
+                    </div>
+                    <div>
+                      <div className="text-xs text-zinc-500">Avg</div>
+                      <Pill className={scoreColor(avg2(sel.id))}>{avg2(sel.id)}</Pill>
+                    </div>
+                    {(() => {
+                      const { b2, b4 } = boxes(sel.id);
+                      return (
+                        <>
+                          <div>
+                            <div className="text-xs text-zinc-500">Box 2%</div>
+                            <div className={`font-semibold ${pctClassB2(b2)}`}>{b2}%</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-zinc-500">Box 4%</div>
+                            <div className={`font-semibold ${pctClassB4(b4)}`}>{b4}%</div>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+
+              {/* History table */}
+              <div className="mt-4 border rounded-lg overflow-hidden">
+                <div className="px-3 py-2 font-medium bg-zinc-50">History</div>
+                <div className="max-h-[320px] overflow-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-white sticky top-0 z-10">
+                      <tr className="border-b">
+                        <th className="p-2 text-left">Date</th>
+                        <th className="p-2 text-left">Zone</th>
+                        <th className="p-2 text-center">Game (EUR)</th>
+                        <th className="p-2 text-center">Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {renderHistoryRows(history, sel.id)}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <DialogFooter className="justify-center">
+                <Button variant="outline" onClick={closeModal}>Close</Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
+}
+
+// ---------- helpers ----------
+function toDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result));
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+}
+
+// Render History rows: stacked Zone, Game column, color-coded score
+function renderHistoryRows(history, recId) {
+  const rows = normalizeHistoryForRecruiter(history, recId);
+  if (!rows.length) {
+    return (
+      <tr className="border-t">
+        <td className="p-2 text-zinc-400" colSpan={4}>No history</td>
+      </tr>
+    );
+  }
+  return rows.map((e, i) => (
+    <tr key={i} className="border-t">
+      <td className="p-2">{fmtDate(e.at)}</td>
+      <td className="p-2">
+        {/* stacked vertically */}
+        <div className="flex flex-col text-xs">
+          {e.zone && <span>Zone {e.zone}</span>}
+          {e.zone2 && <span>Zone {e.zone2}</span>}
+          {e.zone3 && <span>Zone {e.zone3}</span>}
+        </div>
+      </td>
+      <td className="p-2 text-center">{Number(e.game || 0).toFixed(2)}</td>
+      <td className="p-2 text-center"><ScoreBadge v={e.score} /></td>
+    </tr>
+  ));
+}
+
+function fmtDate(d) {
+  const dt = new Date(d || Date.now());
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const yyyy = dt.getFullYear();
+  return `${dd}-${mm}-${yyyy}`;
+}
+
+function normalizeHistoryForRecruiter(history, recId) {
+  const out = [];
+  if (!Array.isArray(history)) return out;
+  for (const entry of history) {
+    // support both flat and team-grouped entries
+    if (entry?.team && Array.isArray(entry.team)) {
+      for (const t of entry.team) {
+        if ((t.recruiterId || t.rid || t.id) !== recId) continue;
+        out.push({
+          at: entry.date || t.at || Date.now(),
+          zone: t.zone || t.zone1 || t.z1,
+          zone2: t.zone2 || t.z2,
+          zone3: t.zone3 || t.z3,
+          game: t.game || t.GAME || 0,
+          score: t.score ?? t.total ?? t.SCORE ?? 0,
+        });
+      }
+    } else if ((entry?.recruiterId || entry?.rid || entry?.id) === recId) {
+      out.push({
+        at: entry.date || entry.at || Date.now(),
+        zone: entry.zone || entry.zone1 || entry.z1,
+        zone2: entry.zone2 || entry.z2,
+        zone3: entry.zone3 || entry.z3,
+        game: entry.game || entry.GAME || 0,
+        score: entry.score ?? entry.total ?? entry.SCORE ?? 0,
+      });
+    }
+  }
+  // newest first
+  out.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  return out;
 }
