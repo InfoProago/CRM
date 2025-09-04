@@ -1,14 +1,9 @@
-// src/pages/Recruiters.jsx — Proago CRM (standalone-safe)
-// v2025-09-04
-// - No util.js dependency; safe fallbacks so tab always mounts
-// - Roles fixed: RK, PR, PC, TC, SM, BM (editable per row)
-// - Crewcode column (table only; NOT as a column in History)
-// - Form shows last 5 worked-day scores inline "1-2-3-4-5" (no decimals), newest first
-// - Average 2 decimals; Box 2/4 thresholds (≥70 / ≥40) color coding
-// - Top filter buttons (Active / Inactive) large, black/white like Add/Import
-// - Per-row Status button black bg + white text
-// - Info button with black border
-// - History modal very wide; newest first; Zones stacked; shows Crewcode in quick facts
+// src/pages/Recruiters.jsx — Proago CRM
+// v2025-09-04b
+// - History modal 90vw x 90vh
+// - Safe date parsing (YYYY-MM-DD) to avoid TZ shift; newest-first sort
+// - Form = latest 5 scores from Planning (colored), centered between Role & Average
+// - Keeps: roles RK/PR/PC/TC/SM/BM, crewcode column, black-bordered Info, black Active buttons
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -24,7 +19,7 @@ const COLS = [
   { w: "22%" }, // Name
   { w: "10%" }, // Crewcode
   { w: "12%" }, // Role
-  { w: "16%" }, // Form (last 5 inline)
+  { w: "16%" }, // Form (latest 5)
   { w: "10%" }, // Average
   { w: "10%" }, // Box 2
   { w: "10%" }, // Box 4
@@ -32,7 +27,7 @@ const COLS = [
   { w: "5%"  }, // Status
 ];
 
-// ------- tiny safe helpers (local, to avoid util.js hard deps) -------
+// ------- tiny safe helpers (no util deps) -------
 const addAuditLog = (payload) => {
   try {
     const k = "proago_audit_log";
@@ -49,11 +44,10 @@ const titleCase = (s) =>
     .replace(/\s+/g, " ")
     .trim();
 
-// score color like Planning (uses 2-dec avg thresholds)
-const scoreColor = (n) => {
-  const s = Number(n) || 0;
-  if (s >= 3) return "bg-green-100 text-green-800 border-green-300";
-  if (s >= 2) return "bg-yellow-100 text-yellow-800 border-yellow-300";
+const scoreChipClass = (n) => {
+  const v = Number(n) || 0;
+  if (v >= 3) return "bg-green-100 text-green-800 border-green-300";
+  if (v >= 2) return "bg-yellow-100 text-yellow-800 border-yellow-300";
   return "bg-red-100 text-red-800 border-red-300";
 };
 const pctClass = (p, threshold) => (Number(p) >= threshold ? "text-green-700" : "text-red-700");
@@ -62,72 +56,95 @@ const Pill = ({ children, className = "" }) => (
   <span className={`inline-flex items-center border rounded-full px-2 py-[2px] text-xs font-medium ${className}`}>{children}</span>
 );
 
-// Normalize/guard history entries that might come in different shapes
-function toDateVal(v) {
-  if (!v) return 0;
+// --- date utils: parse YYYY-MM-DD without timezone drift ---
+function parseYMD(s) {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return { y, m: mo, d };
+}
+function toEpochSafe(v) {
+  if (!v && v !== 0) return 0;
+  if (typeof v === "number") {
+    // seconds vs ms
+    return v > 1e12 ? v : v * 1000;
+  }
+  const ymd = parseYMD(v);
+  if (ymd) {
+    // use UTC midnight to keep day stable
+    return Date.UTC(ymd.y, ymd.m - 1, ymd.d);
+  }
   const t = new Date(v).getTime();
   return Number.isFinite(t) ? t : 0;
 }
-function readNum(o, keys, def = 0) {
-  for (const k of keys) {
-    const v = o?.[k];
-    if (v !== undefined && v !== null && v !== "") return Number(v) || 0;
+function fmtDDMMYYYYFromAny(v) {
+  const ymd = parseYMD(v);
+  if (ymd) {
+    const dd = String(ymd.d).padStart(2, "0");
+    const mm = String(ymd.m).padStart(2, "0");
+    return `${dd}-${mm}-${ymd.y}`;
   }
-  return def;
+  const t = toEpochSafe(v);
+  const d = new Date(t);
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = d.getUTCFullYear();
+  return `${dd}-${mm}-${yyyy}`;
 }
-function pickZone(o) {
-  return o.zone ?? o.zone1 ?? o.z1 ?? o.Zone ?? o.Zone1 ?? o.Z1 ?? "";
-}
+
+// Normalize/guard history entries; newest-first
 function normalizeHistory(history, recId) {
   const out = [];
-  if (!Array.isArray(history)) return out;
+  const list = Array.isArray(history) ? history : [];
 
-  for (const entry of history) {
-    // team-based (array of members)
+  for (const entry of list) {
+    // If a team array exists, pick lines for this recruiter
     if (entry?.team && Array.isArray(entry.team)) {
       for (const t of entry.team) {
         const rid = t.recruiterId ?? t.rid ?? t.id;
         if (String(rid) !== String(recId)) continue;
         out.push({
-          at: toDateVal(entry.date || t.at || entry.at),
-          zone: pickZone(t),
-          zone2: t.zone2 || t.z2,
-          zone3: t.zone3 || t.z3,
-          score: readNum(t, ["score", "total", "SCORE"]),
-          b2: readNum(t, ["box2", "b2", "B2"]),
-          b2s: readNum(t, ["box2s", "b2s", "B2S", "box2_star", "b2_star"]),
-          b4: readNum(t, ["box4", "b4", "B4"]),
-          b4s: readNum(t, ["box4s", "b4s", "B4S", "box4_star", "b4_star"]),
-          game: readNum(t, ["game", "GAME", "sales", "SalesGame"]),
+          rawDate: entry.date ?? t.at ?? entry.at,
+          sortKey: toEpochSafe(entry.date ?? t.at ?? entry.at),
+          zone1: t.zone ?? t.zone1 ?? t.z1 ?? "",
+          zone2: t.zone2 ?? t.z2 ?? "",
+          zone3: t.zone3 ?? t.z3 ?? "",
+          score: Number(t.score ?? t.total ?? 0) || 0,
+          b2: Number(t.box2 ?? t.b2 ?? 0) || 0,
+          b2s: Number(t.box2s ?? t.b2s ?? 0) || 0,
+          b4: Number(t.box4 ?? t.b4 ?? 0) || 0,
+          b4s: Number(t.box4s ?? t.b4s ?? 0) || 0,
+          game: Number(t.game ?? t.sales ?? 0) || 0,
         });
       }
     } else {
       const rid = entry?.recruiterId ?? entry?.rid ?? entry?.id;
       if (String(rid) !== String(recId)) continue;
       out.push({
-        at: toDateVal(entry.date || entry.at),
-        zone: pickZone(entry),
-        zone2: entry.zone2 || entry.z2,
-        zone3: entry.zone3 || entry.z3,
-        score: readNum(entry, ["score", "total", "SCORE"]),
-        b2: readNum(entry, ["box2", "b2", "B2"]),
-        b2s: readNum(entry, ["box2s", "b2s", "B2S", "box2_star", "b2_star"]),
-        b4: readNum(entry, ["box4", "b4", "B4"]),
-        b4s: readNum(entry, ["box4s", "b4s", "B4S", "box4_star", "b4_star"]),
-        game: readNum(entry, ["game", "GAME", "sales", "SalesGame"]),
+        rawDate: entry.date ?? entry.at,
+        sortKey: toEpochSafe(entry.date ?? entry.at),
+        zone1: entry.zone ?? entry.zone1 ?? entry.z1 ?? "",
+        zone2: entry.zone2 ?? entry.z2 ?? "",
+        zone3: entry.zone3 ?? entry.z3 ?? "",
+        score: Number(entry.score ?? entry.total ?? 0) || 0,
+        b2: Number(entry.box2 ?? entry.b2 ?? 0) || 0,
+        b2s: Number(entry.box2s ?? entry.b2s ?? 0) || 0,
+        b4: Number(entry.box4 ?? entry.b4 ?? 0) || 0,
+        b4s: Number(entry.box4s ?? entry.b4s ?? 0) || 0,
+        game: Number(entry.game ?? entry.sales ?? 0) || 0,
       });
     }
   }
 
-  // newest first
-  out.sort((a, b) => b.at - a.at);
+  out.sort((a, b) => b.sortKey - a.sortKey); // newest first
   return out;
 }
 
-function last5FormInline(history, recId) {
+function last5Scores(history, recId) {
+  // newest first, just scores (integers), max 5
   const rows = normalizeHistory(history, recId);
-  // Newest first; take first 5 scores, integer only
-  return rows.slice(0, 5).map((e) => String(Math.round(Number(e.score || 0))));
+  return rows.slice(0, 5).map((e) => Math.round(e.score));
 }
 
 function avg2(history, recId) {
@@ -138,21 +155,10 @@ function avg2(history, recId) {
 }
 
 function boxPercentsOverall(history, recId) {
-  // Average of available b2/b4 over normalized set (last 8 weeks scope not enforced without date math)
   const rows = normalizeHistory(history, recId);
   if (!rows.length) return { b2: 0, b4: 0 };
-  const b2Vals = rows.map((r) => Number(r.b2) || 0);
-  const b4Vals = rows.map((r) => Number(r.b4) || 0);
-  const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, v) => a + v, 0) / arr.length) : 0);
-  return { b2: avg(b2Vals), b4: avg(b4Vals) };
-}
-
-function fmtDateDDMMYYYY(ms) {
-  const d = new Date(ms || Date.now());
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  return `${dd}-${mm}-${yyyy}`;
+  const mean = (arr) => (arr.length ? Math.round(arr.reduce((a, v) => a + (Number(v) || 0), 0) / arr.length) : 0);
+  return { b2: mean(rows.map((r) => r.b2)), b4: mean(rows.map((r) => r.b4)) };
 }
 
 // ------- main component -------
@@ -165,7 +171,6 @@ export default function Recruiters({ recruiters = [], setRecruiters = () => {}, 
   const rows = useMemo(() => {
     const list = Array.isArray(recruiters) ? recruiters : [];
     const filtered = filter === "active" ? list.filter((r) => !r.isInactive) : list.filter((r) => r.isInactive);
-    // Sort by role (fixed order), then name
     const roleOrder = { RK: 1, PR: 2, PC: 3, TC: 4, SM: 5, BM: 6 };
     return filtered
       .slice()
@@ -198,20 +203,19 @@ export default function Recruiters({ recruiters = [], setRecruiters = () => {}, 
   };
 
   // avatar
-  const setAvatar = async (id, file, setSel) => {
+  const setAvatar = async (id, file, setSelState) => {
     if (!file) return;
     const dataUrl = await fileToDataUrl(file);
     setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, avatar: dataUrl } : r)));
-    if (setSel) setSel((s) => (s && s.id === id ? { ...s, avatar: dataUrl } : s));
+    if (setSelState) setSelState((s) => (s && s.id === id ? { ...s, avatar: dataUrl } : s));
     addAuditLog({ area: "Recruiters", action: "Set Avatar", recruiter: { id } });
   };
-  const removeAvatar = (id, setSel) => {
+  const removeAvatar = (id, setSelState) => {
     setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, avatar: "" } : r)));
-    if (setSel) setSel((s) => (s && s.id === id ? { ...s, avatar: "" } : s));
+    if (setSelState) setSelState((s) => (s && s.id === id ? { ...s, avatar: "" } : s));
     addAuditLog({ area: "Recruiters", action: "Remove Avatar", recruiter: { id } });
   };
 
-  // open/close modal
   const openModal = (rec) => { setSel(rec); setOpenInfo(true); };
 
   return (
@@ -254,7 +258,7 @@ export default function Recruiters({ recruiters = [], setRecruiters = () => {}, 
                   <th className="p-3 text-left">Name</th>
                   <th className="p-3 text-center">Crewcode</th>
                   <th className="p-3 text-center">Role</th>
-                  <th className="p-3 text-left">Form</th>
+                  <th className="p-3 text-center">Form</th>
                   <th className="p-3 text-center">Average</th>
                   <th className="p-3 text-center">Box 2</th>
                   <th className="p-3 text-center">Box 4</th>
@@ -265,7 +269,7 @@ export default function Recruiters({ recruiters = [], setRecruiters = () => {}, 
 
               <tbody>
                 {rows.map((r) => {
-                  const formInline = last5FormInline(history, r.id); // newest first, max 5, integers as strings
+                  const form5 = last5Scores(history, r.id); // newest first, max 5
                   const A = avg2(history, r.id);
                   const { b2, b4 } = boxPercentsOverall(history, r.id);
 
@@ -302,18 +306,25 @@ export default function Recruiters({ recruiters = [], setRecruiters = () => {}, 
                         </div>
                       </td>
 
-                      {/* Form (1-2-3-4-5) */}
-                      <td className="p-3">
-                        {formInline.length ? (
-                          <span className="whitespace-nowrap">{formInline.join("-")}</span>
-                        ) : (
-                          <span className="text-zinc-400">No data</span>
-                        )}
+                      {/* Form (centered between Role and Average) */}
+                      <td className="p-3 text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          {form5.length ? (
+                            form5.map((n, i) => (
+                              <React.Fragment key={i}>
+                                <Pill className={scoreChipClass(n)}>{n}</Pill>
+                                {i < form5.length - 1 && <span className="text-zinc-400">-</span>}
+                              </React.Fragment>
+                            ))
+                          ) : (
+                            <span className="text-zinc-400">No data</span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Average */}
                       <td className="p-3 text-center">
-                        <Pill className={scoreColor(A)}>{A}</Pill>
+                        <Pill className={scoreChipClass(A)}>{A}</Pill>
                       </td>
 
                       {/* Box 2 */}
@@ -365,19 +376,19 @@ export default function Recruiters({ recruiters = [], setRecruiters = () => {}, 
         </CardContent>
       </Card>
 
-      {/* History Modal */}
+      {/* History Modal (90% width & height) */}
       <Dialog open={openInfo} onOpenChange={setOpenInfo}>
-        <DialogContent className="w-[98vw] max-w-[1600px]">
+        <DialogContent className="p-4" style={{ width: "90vw", maxWidth: "90vw", height: "90vh" }}>
           {sel && (
             <>
               <DialogHeader>
                 <DialogTitle className="text-center">History</DialogTitle>
               </DialogHeader>
 
-              <div className="grid md:grid-cols-[220px_1fr] gap-6 items-start">
-                {/* Avatar */}
+              <div className="grid md:grid-cols-[260px_1fr] gap-6 items-start h-[calc(90vh-8rem)]">
+                {/* Left: Avatar & quick actions */}
                 <div className="grid gap-3 place-items-center">
-                  <div className="h-36 w-36 rounded-full bg-zinc-200 overflow-hidden grid place-items-center">
+                  <div className="h-40 w-40 rounded-full bg-zinc-200 overflow-hidden grid place-items-center">
                     {sel.avatar ? (
                       <img src={sel.avatar} alt="" className="h-full w-full object-cover" />
                     ) : (
@@ -405,10 +416,11 @@ export default function Recruiters({ recruiters = [], setRecruiters = () => {}, 
                   </div>
                 </div>
 
-                {/* Quick facts */}
-                <div className="grid gap-4">
-                  <div>
-                    <div className="text-sm font-medium mb-1">Name</div>
+                {/* Right: details & history */}
+                <div className="grid gap-4 min-w-0 overflow-hidden">
+                  {/* Editable name */}
+                  <div className="grid gap-1">
+                    <div className="text-sm font-medium">Name</div>
                     <Input
                       value={sel.name || ""}
                       onChange={(e) => {
@@ -419,63 +431,49 @@ export default function Recruiters({ recruiters = [], setRecruiters = () => {}, 
                     />
                   </div>
 
+                  {/* Quick facts */}
                   <div className="flex flex-wrap gap-6 items-center">
-                    <div>
-                      <div className="text-xs text-zinc-500">Role</div>
-                      <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{String(sel.role || "")}</Pill>
-                    </div>
-                    <div>
-                      <div className="text-xs text-zinc-500">Average</div>
-                      <Pill className={scoreColor(avg2(history, sel.id))}>{avg2(history, sel.id)}</Pill>
-                    </div>
-                    <div>
-                      <div className="text-xs text-zinc-500">Crewcode</div>
-                      <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{sel.crewCode || "—"}</Pill>
-                    </div>
+                    <Fact label="Role"><Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{String(sel.role || "")}</Pill></Fact>
+                    <Fact label="Average"><Pill className={scoreChipClass(avg2(history, sel.id))}>{avg2(history, sel.id)}</Pill></Fact>
+                    <Fact label="Crewcode"><Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{sel.crewCode || "—"}</Pill></Fact>
                     {(() => {
                       const { b2, b4 } = boxPercentsOverall(history, sel.id);
                       return (
                         <>
-                          <div>
-                            <div className="text-xs text-zinc-500">Box 2</div>
-                            <div className={`font-semibold ${pctClass(b2, 70)}`}>{b2}%</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-zinc-500">Box 4</div>
-                            <div className={`font-semibold ${pctClass(b4, 40)}`}>{b4}%</div>
-                          </div>
+                          <Fact label="Box 2"><span className={`font-semibold ${pctClass(b2, 70)}`}>{b2}%</span></Fact>
+                          <Fact label="Box 4"><span className={`font-semibold ${pctClass(b4, 40)}`}>{b4}%</span></Fact>
                         </>
                       );
                     })()}
                   </div>
+
+                  {/* History table */}
+                  <div className="border rounded-lg overflow-hidden min-h-0 flex flex-col">
+                    <div className="px-3 py-2 font-medium bg-zinc-50">History</div>
+                    <div className="flex-1 overflow-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-white sticky top-0 z-10">
+                          <tr className="border-b">
+                            <th className="p-2 text-left">Date</th>
+                            <th className="p-2 text-left">Zone</th>
+                            <th className="p-2 text-center">Score</th>
+                            <th className="p-2 text-center">Box 2</th>
+                            <th className="p-2 text-center">Box 2*</th>
+                            <th className="p-2 text-center">Box 4</th>
+                            <th className="p-2 text-center">Box 4*</th>
+                            <th className="p-2 text-center">Sales Game</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {renderHistoryRows(history, sel.id)}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* History table */}
-              <div className="mt-4 border rounded-lg overflow-hidden">
-                <div className="px-3 py-2 font-medium bg-zinc-50">History</div>
-                <div className="max-h-[60vh] overflow-auto">
-                  <table className="min-w-full text-sm">
-                    <thead className="bg-white sticky top-0 z-10">
-                      <tr className="border-b">
-                        <th className="p-2 text-left">Date</th>
-                        <th className="p-2 text-left">Zone</th>
-                        <th className="p-2 text-center">Score</th>
-                        <th className="p-2 text-center">Box 2</th>
-                        <th className="p-2 text-center">Box 2*</th>
-                        <th className="p-2 text-center">Box 4</th>
-                        <th className="p-2 text-center">Box 4*</th>
-                        <th className="p-2 text-center">Sales Game</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {renderHistoryRows(history, sel.id)}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <DialogFooter className="justify-center">
+              <DialogFooter className="justify-center pt-3">
                 <Button variant="outline" onClick={() => setOpenInfo(false)}>Close</Button>
               </DialogFooter>
             </>
@@ -486,7 +484,14 @@ export default function Recruiters({ recruiters = [], setRecruiters = () => {}, 
   );
 }
 
-// ------- tiny local fns used by component -------
+// ------- small pieces -------
+const Fact = ({ label, children }) => (
+  <div className="min-w-[100px]">
+    <div className="text-xs text-zinc-500">{label}</div>
+    {children}
+  </div>
+);
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
@@ -507,16 +512,16 @@ function renderHistoryRows(history, recId) {
   }
   return rows.map((e, i) => (
     <tr key={i} className="border-t">
-      <td className="p-2">{fmtDateDDMMYYYY(e.at)}</td>
+      <td className="p-2">{fmtDDMMYYYYFromAny(e.rawDate)}</td>
       <td className="p-2">
         <div className="flex flex-col text-xs">
-          {e.zone && <span>Zone {e.zone}</span>}
+          {e.zone1 && <span>Zone {e.zone1}</span>}
           {e.zone2 && <span>Zone {e.zone2}</span>}
           {e.zone3 && <span>Zone {e.zone3}</span>}
         </div>
       </td>
       <td className="p-2 text-center">
-        <Pill className={scoreColor(e.score)}>{Number(e.score || 0).toFixed(2)}</Pill>
+        <Pill className={scoreChipClass(e.score)}>{Number(e.score || 0).toFixed(2)}</Pill>
       </td>
       <td className="p-2 text-center"><span className={`font-semibold ${pctClass(e.b2, 70)}`}>{Number(e.b2 || 0).toFixed(0)}%</span></td>
       <td className="p-2 text-center"><span className={`font-semibold ${pctClass(e.b2s, 70)}`}>{Number(e.b2s || 0).toFixed(0)}%</span></td>
