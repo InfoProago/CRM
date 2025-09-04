@@ -1,10 +1,9 @@
 // src/pages/Recruiters.jsx — Proago CRM
 // v2025-09-04
-// - History modal maxed (wider)
-// - Role editable per row (dropdown) + audit log
-// - Info button border black
-// - Row status "Active" button black with white letters (Inactive too)
-// - Top filter buttons (Active/Inactive) enlarged (like Settings/Logout / Add/Import sizing)
+// - Roles = RK, PR, PC, TC, SM, BM (editable per row)
+// - Form shows last 5 worked days inline "1-2-3-4-5" (no decimals), newest first, at most 5
+// - History modal wider (nearly full width), shows zones clearly, newest first, and shows Crewcode
+// - Info button black border; big top filter buttons; per-row status button black/white
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -27,7 +26,7 @@ const COLS = [
   { w: "22%" }, // Name
   { w: "10%" }, // Crewcode
   { w: "12%" }, // Role
-  { w: "16%" }, // Form (last 5)
+  { w: "16%" }, // Form (last 5 inline)
   { w: "10%" }, // Average
   { w: "10%" }, // Box 2
   { w: "10%" }, // Box 4
@@ -35,8 +34,8 @@ const COLS = [
   { w: "5%"  }, // Status toggle
 ];
 
-// Common roles; any existing custom role will be added dynamically at runtime
-const ROLES_BASE = ["Rookie", "Agent", "Senior", "Leader", "Captain", "Manager"];
+// Exact role list per your spec
+const ROLES = ["RK", "PR", "PC", "TC", "SM", "BM"];
 
 // Coloring (Planning-like)
 const scoreColor = (n) => {
@@ -57,15 +56,6 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
   const [filter, setFilter] = useState("active"); // "active" | "inactive"
 
   const avatarFileRef = useRef(null);
-
-  // Ensure dropdown contains any custom roles present
-  const allRoles = useMemo(() => {
-    const present = new Set(ROLES_BASE);
-    (Array.isArray(recruiters) ? recruiters : []).forEach((r) => {
-      if (r?.role) present.add(String(r.role));
-    });
-    return Array.from(present);
-  }, [recruiters]);
 
   // Derived rows with filter + stable sort
   const rows = useMemo(() => {
@@ -126,21 +116,16 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
     addAuditLog({ area: "Recruiters", action: "Remove Avatar", recruiter: { id } });
   };
 
-  // ---------- Info/History Modal ----------
-  const [openInfo, setOpenInfo] = useState(false);
-  const [sel, setSel] = useState(null);
-
-  const openModal = (rec) => { setSel(rec); setOpenInfo(true); };
-  const closeModal = () => setOpenInfo(false);
-
   // utilities
   function last5(recId) {
-    return last5ScoresFor(history, recId); // newest→oldest
+    // newest → oldest from util; we only display the latest 5, as integers, joined with dashes
+    const arr = last5ScoresFor(history, recId) || [];
+    return arr.slice(0, 5).map((v) => Number(v || 0).toFixed(0));
   }
   function avg2(recId) {
-    const arr = last5(recId);
+    const arr = last5ScoresFor(history, recId) || [];
     if (!arr.length) return "0.00";
-    const n = arr.reduce((a, b) => a + (Number(b) || 0), 0) / arr.length;
+    const n = arr.slice(0, 5).reduce((a, b) => a + (Number(b) || 0), 0) / Math.min(5, arr.length);
     return n.toFixed(2);
   }
   function boxesOverall(recId) {
@@ -206,7 +191,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
 
               <tbody>
                 {rows.map((r) => {
-                  const last = last5(r.id);
+                  const formInline = last5(r.id);               // ["3","4","2","5","3"]
                   const A = avg2(r.id);
                   const { b2, b4 } = boxesOverall(r.id);
 
@@ -228,7 +213,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                         </div>
                       </td>
 
-                      {/* Role editable (dropdown) */}
+                      {/* Role editable (dropdown — exact list) */}
                       <td className="p-3 text-center">
                         <div className="mx-auto" style={{ maxWidth: 160 }}>
                           <select
@@ -236,22 +221,20 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                             value={r.role || ""}
                             onChange={(e) => setRole(r.id, e.target.value)}
                           >
-                            {allRoles.map((role) => (
+                            {ROLES.map((role) => (
                               <option key={role} value={role}>{role}</option>
                             ))}
                           </select>
                         </div>
                       </td>
 
-                      {/* Form last 5 */}
+                      {/* Form last 5 inline (no decimals) */}
                       <td className="p-3">
-                        <div className="flex flex-wrap gap-1">
-                          {last.length ? (
-                            last.slice(0, 5).map((v, i) => <ScoreBadge key={i} v={v} />)
-                          ) : (
-                            <span className="text-zinc-400">No data</span>
-                          )}
-                        </div>
+                        {formInline.length ? (
+                          <span className="whitespace-nowrap">{formInline.join("-")}</span>
+                        ) : (
+                          <span className="text-zinc-400">No data</span>
+                        )}
                       </td>
 
                       {/* Average 2 dec */}
@@ -280,7 +263,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                         </Button>
                       </td>
 
-                      {/* Status toggle: BOTH states are black bg + white text per your ask */}
+                      {/* Status toggle: black bg + white text */}
                       <td className="p-3 text-center">
                         <Button
                           onClick={() => toggleStatus(r)}
@@ -310,16 +293,16 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
         </CardContent>
       </Card>
 
-      {/* ---------- History Modal (maxed) ---------- */}
+      {/* ---------- History Modal (wider) ---------- */}
       <Dialog open={openInfo} onOpenChange={setOpenInfo}>
-        <DialogContent className="w-[96vw] max-w-[1400px]">
+        <DialogContent className="w-[98vw] max-w-[1600px]">
           {sel && (
             <>
               <DialogHeader>
                 <DialogTitle className="text-center">History</DialogTitle>
               </DialogHeader>
 
-              {/* Avatar + Rename + Quick stats */}
+              {/* Avatar + Rename + Quick facts (now also Crewcode) */}
               <div className="grid md:grid-cols-[220px_1fr] gap-6 items-start">
                 {/* Avatar */}
                 <div className="grid gap-3 place-items-center">
@@ -365,7 +348,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                     />
                   </div>
 
-                  <div className="flex flex-wrap gap-4 items-center">
+                  <div className="flex flex-wrap gap-6 items-center">
                     <div>
                       <div className="text-xs text-zinc-500">Role</div>
                       <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{rankAcr(sel.role)}</Pill>
@@ -374,8 +357,12 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                       <div className="text-xs text-zinc-500">Average</div>
                       <Pill className={scoreColor(avg2(sel.id))}>{avg2(sel.id)}</Pill>
                     </div>
+                    <div>
+                      <div className="text-xs text-zinc-500">Crewcode</div>
+                      <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{sel.crewCode || "—"}</Pill>
+                    </div>
                     {(() => {
-                      const { b2, b4 } = boxesOverall(sel.id);
+                      const { b2, b4 } = boxPercentsLast8w(history, sel.id);
                       return (
                         <>
                           <div>
@@ -393,7 +380,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                 </div>
               </div>
 
-              {/* History table — expanded columns */}
+              {/* History table */}
               <div className="mt-4 border rounded-lg overflow-hidden">
                 <div className="px-3 py-2 font-medium bg-zinc-50">History</div>
                 <div className="max-h-[60vh] overflow-auto">
@@ -418,7 +405,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
               </div>
 
               <DialogFooter className="justify-center">
-                <Button variant="outline" onClick={closeModal}>Close</Button>
+                <Button variant="outline" onClick={() => setOpenInfo(false)}>Close</Button>
               </DialogFooter>
             </>
           )}
@@ -491,7 +478,8 @@ function normalizeHistoryForRecruiter(history, recId) {
       });
     }
   }
-  out.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()); // newest first
+  // newest first
+  out.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
   return out;
 }
 
@@ -508,6 +496,7 @@ function renderHistoryRows(history, recId) {
     <tr key={i} className="border-t">
       <td className="p-2">{fmtDate(e.at)}</td>
       <td className="p-2">
+        {/* Zones stacked vertically if multiple are present */}
         <div className="flex flex-col text-xs">
           {e.zone && <span>Zone {e.zone}</span>}
           {e.zone2 && <span>Zone {e.zone2}</span>}
