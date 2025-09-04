@@ -1,6 +1,12 @@
 // src/pages/Recruiters.jsx — Proago CRM
-// v2025-09-04 • Recruiters: Active/All toggle, per-row status, color-coded Form/Box%, 2-dec Avg,
-//                Info modal (avatar add/remove, rename, History table w/ Game), pinned Info column, audit logging
+// v2025-09-04
+// - Crewcode column
+// - Active/Inactive filter (black/white like Inflow Add/Import). Default = Active
+// - Headers: Average, Box 2, Box 4 (no % symbol)
+// - Rebalanced column widths (Form narrower) and centered where appropriate
+// - Info modal renamed to "History", larger, with columns: Date, Zone, Score, Box 2, Box 2*, Box 4, Box 4*, Sales Game
+// - Avatar add/remove reflects immediately while modal is open
+// - Audit logs for status/rename/avatar
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -16,81 +22,97 @@ import {
   rankAcr,
   rankOrderVal,
   titleCase,
-  clone,
-} from "../util"; // uses helpers present in util.js  [oai_citation:0‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+} from "../util";
 
+// Column widths (sum = 100)
 const COLS = [
-  { w: "24%" }, // Name
+  { w: "22%" }, // Name
+  { w: "10%" }, // Crewcode
   { w: "10%" }, // Role
-  { w: "20%" }, // Form (last 5)
-  { w: "10%" }, // Avg (2 dec)
-  { w: "10%" }, // Box 2%
-  { w: "10%" }, // Box 4%
-  { w: "8%"  }, // Info (pinned)
-  { w: "8%"  }, // Status toggle
+  { w: "16%" }, // Form (last 5)
+  { w: "10%" }, // Average
+  { w: "10%" }, // Box 2
+  { w: "10%" }, // Box 4
+  { w: "6%"  }, // Info
+  { w: "6%"  }, // Status toggle
 ];
 
-// color helpers (Planning-like)
+// Coloring (Planning-like)
 const scoreColor = (n) => {
   const s = Number(n) || 0;
   if (s >= 3) return "bg-green-100 text-green-800 border-green-300";
   if (s >= 2) return "bg-yellow-100 text-yellow-800 border-yellow-300";
   return "bg-red-100 text-red-800 border-red-300";
 };
-const pctClassB2 = (p) => (p >= 70 ? "text-green-700" : "text-red-700");
-const pctClassB4 = (p) => (p >= 40 ? "text-green-700" : "text-red-700");
+const pctClass = (p, threshold) => (Number(p) >= threshold ? "text-green-700" : "text-red-700");
 
-// pill badge
 const Pill = ({ children, className = "" }) => (
   <span className={`inline-flex items-center border rounded-full px-2 py-[2px] text-xs font-medium ${className}`}>{children}</span>
 );
-
-// History row score badge
 const ScoreBadge = ({ v }) => <Pill className={scoreColor(v)}>{Number(v || 0).toFixed(2)}</Pill>;
 
 export default function Recruiters({ recruiters, setRecruiters, history, setHistory }) {
-  // Show Active by default (you asked for this)
-  const [showAll, setShowAll] = useState(false); // false = Active (default)
+  // Filters: default "Active"
+  const [filter, setFilter] = useState("active"); // "active" | "inactive"
 
-  const fileRef = useRef(null);
+  const avatarFileRef = useRef(null);
 
-  // derived rows with filters/sort (keep stable ordering: rank then name)
+  // Derived rows with filter + stable sort
   const rows = useMemo(() => {
     const base = Array.isArray(recruiters) ? recruiters.slice() : [];
-    const filtered = showAll ? base : base.filter((r) => !r.isInactive);
+    const filtered =
+      filter === "active" ? base.filter((r) => !r.isInactive) :
+      filter === "inactive" ? base.filter((r) => r.isInactive) : base;
     return filtered.sort((a, b) => {
       const ra = rankOrderVal(a.role), rb = rankOrderVal(b.role);
       if (ra !== rb) return ra - rb;
       return (a.name || "").localeCompare(b.name || "");
     });
-  }, [recruiters, showAll]);
+  }, [recruiters, filter]);
 
   // ---------- Mutators ----------
   const toggleStatus = (rec) => {
     setRecruiters((rs) =>
       rs.map((r) => (r.id === rec.id ? { ...r, isInactive: !r.isInactive } : r))
     );
-    addAuditLog({ area: "Recruiters", action: "Toggle Status", recruiter: { id: rec.id, name: rec.name }, to: (!rec.isInactive ? "Inactive" : "Active") }); //  [oai_citation:1‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+    addAuditLog({
+      area: "Recruiters",
+      action: "Toggle Status",
+      recruiter: { id: rec.id, name: rec.name },
+      to: (!rec.isInactive ? "Inactive" : "Active"),
+    });
+    // If you were viewing inactive list and toggled to active, it will naturally drop out of the filtered table.
   };
 
   const rename = (id, newName) => {
-    setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, name: titleCase(newName || "") } : r)));
-    addAuditLog({ area: "Recruiters", action: "Rename", recruiter: { id, name: titleCase(newName || "") } }); //  [oai_citation:2‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+    const nm = titleCase(newName || "");
+    setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, name: nm } : r)));
+    addAuditLog({ area: "Recruiters", action: "Rename", recruiter: { id, name: nm } });
   };
 
-  const setAvatar = async (id, file) => {
+  const setCrewcode = (id, code) => {
+    // allow 5 digits (as discussed in Inflow hire)
+    const val = String(code || "").replace(/\D/g, "").slice(0, 5);
+    setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, crewCode: val } : r)));
+    addAuditLog({ area: "Recruiters", action: "Edit Crewcode", recruiter: { id }, crewCode: val });
+  };
+
+  const setAvatar = async (id, file, setSel) => {
     if (!file) return;
     const dataUrl = await toDataURL(file);
     setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, avatar: dataUrl } : r)));
-    addAuditLog({ area: "Recruiters", action: "Set Avatar", recruiter: { id } }); //  [oai_citation:3‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+    // reflect immediately in open modal
+    if (setSel) setSel((s) => (s && s.id === id ? { ...s, avatar: dataUrl } : s));
+    addAuditLog({ area: "Recruiters", action: "Set Avatar", recruiter: { id } });
   };
 
-  const removeAvatar = (id) => {
+  const removeAvatar = (id, setSel) => {
     setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, avatar: "" } : r)));
-    addAuditLog({ area: "Recruiters", action: "Remove Avatar", recruiter: { id } }); //  [oai_citation:4‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+    if (setSel) setSel((s) => (s && s.id === id ? { ...s, avatar: "" } : s));
+    addAuditLog({ area: "Recruiters", action: "Remove Avatar", recruiter: { id } });
   };
 
-  // ---------- Info Modal ----------
+  // ---------- Info/History Modal ----------
   const [openInfo, setOpenInfo] = useState(false);
   const [sel, setSel] = useState(null);
 
@@ -99,7 +121,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
 
   // utilities
   function last5(recId) {
-    return last5ScoresFor(history, recId); // array of numbers newest→oldest  [oai_citation:5‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+    return last5ScoresFor(history, recId); // newest→oldest
   }
   function avg2(recId) {
     const arr = last5(recId);
@@ -107,31 +129,37 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
     const n = arr.reduce((a, b) => a + (Number(b) || 0), 0) / arr.length;
     return n.toFixed(2);
   }
-  function boxes(recId) {
-    return boxPercentsLast8w(history, recId); // { b2, b4 } in %  [oai_citation:6‡util.js](file-service://file-6hbZoqmAMud2t5oUirXjj6)
+  function boxesOverall(recId) {
+    return boxPercentsLast8w(history, recId); // { b2, b4 } in %
   }
 
   return (
     <div className="grid gap-4">
-      {/* Header with Active/All toggle (right) */}
+      {/* Header filter: Active / Inactive (black/white like Inflow buttons) */}
       <div className="flex items-center justify-between">
         <div />
         <div className="flex items-center gap-2">
-          {/* Active = white with black text */}
           <Button
             size="sm"
-            onClick={() => setShowAll(false)}
-            style={showAll ? { background: "white", color: "black", border: "1px solid #e5e7eb" } : { background: "white", color: "black", border: "2px solid black" }}
+            onClick={() => setFilter("active")}
+            style={{
+              background: "black",
+              color: "white",
+              opacity: filter === "active" ? 1 : 0.6,
+            }}
           >
             Active
           </Button>
-          {/* All = black with white text */}
           <Button
             size="sm"
-            onClick={() => setShowAll(true)}
-            style={showAll ? { background: "black", color: "white" } : { background: "#111", color: "#fff", opacity: 0.75 }}
+            onClick={() => setFilter("inactive")}
+            style={{
+              background: "black",
+              color: "white",
+              opacity: filter === "inactive" ? 1 : 0.6,
+            }}
           >
-            All
+            Inactive
           </Button>
         </div>
       </div>
@@ -151,11 +179,12 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
               <thead className="bg-zinc-50">
                 <tr>
                   <th className="p-3 text-left">Name</th>
+                  <th className="p-3 text-center">Crewcode</th>
                   <th className="p-3 text-center">Role</th>
                   <th className="p-3 text-left">Form</th>
-                  <th className="p-3 text-center">Avg</th>
-                  <th className="p-3 text-center">Box 2%</th>
-                  <th className="p-3 text-center">Box 4%</th>
+                  <th className="p-3 text-center">Average</th>
+                  <th className="p-3 text-center">Box 2</th>
+                  <th className="p-3 text-center">Box 4</th>
                   <th className="p-3 text-center">Info</th>
                   <th className="p-3 text-center">Status</th>
                 </tr>
@@ -165,24 +194,32 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                 {rows.map((r) => {
                   const last = last5(r.id);
                   const A = avg2(r.id);
-                  const { b2, b4 } = boxes(r.id);
+                  const { b2, b4 } = boxesOverall(r.id);
 
                   return (
                     <tr key={r.id} className="border-t">
-                      {/* Name (editable inline) */}
+                      {/* Name editable */}
                       <td className="p-3">
-                        <Input
-                          value={r.name || ""}
-                          onChange={(e) => rename(r.id, e.target.value)}
-                        />
+                        <Input value={r.name || ""} onChange={(e) => rename(r.id, e.target.value)} />
                       </td>
 
-                      {/* Role (readable acronym) */}
+                      {/* Crewcode editable (center, 5 digits) */}
+                      <td className="p-3 text-center">
+                        <div className="mx-auto" style={{ maxWidth: 96 }}>
+                          <Input
+                            className="text-center"
+                            value={r.crewCode || ""}
+                            onChange={(e) => setCrewcode(r.id, e.target.value)}
+                          />
+                        </div>
+                      </td>
+
+                      {/* Role */}
                       <td className="p-3 text-center">
                         <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{rankAcr(r.role)}</Pill>
                       </td>
 
-                      {/* Form = last 5 scores (colored) */}
+                      {/* Form last 5 */}
                       <td className="p-3">
                         <div className="flex flex-wrap gap-1">
                           {last.length ? (
@@ -193,29 +230,29 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                         </div>
                       </td>
 
-                      {/* Average 2 decimals with Planning-like color */}
+                      {/* Average 2 dec */}
                       <td className="p-3 text-center">
                         <Pill className={scoreColor(A)}>{A}</Pill>
                       </td>
 
-                      {/* Box 2% */}
+                      {/* Box 2 (≥70 green) */}
                       <td className="p-3 text-center">
-                        <span className={`font-semibold ${pctClassB2(b2)}`}>{b2}%</span>
+                        <span className={`font-semibold ${pctClass(b2, 70)}`}>{b2}%</span>
                       </td>
 
-                      {/* Box 4% */}
+                      {/* Box 4 (≥40 green) */}
                       <td className="p-3 text-center">
-                        <span className={`font-semibold ${pctClassB4(b4)}`}>{b4}%</span>
+                        <span className={`font-semibold ${pctClass(b4, 40)}`}>{b4}%</span>
                       </td>
 
-                      {/* Info button (pinned column) */}
+                      {/* Info */}
                       <td className="p-3 text-center">
                         <Button size="sm" variant="outline" onClick={() => openModal(r)}>
                           <Info className="h-4 w-4" />
                         </Button>
                       </td>
 
-                      {/* Status Active/Inactive with required styling */}
+                      {/* Status toggle: match earlier per-row styling (Active=white/black, Inactive=black/white) */}
                       <td className="p-3 text-center">
                         {r.isInactive ? (
                           <Button size="sm" onClick={() => toggleStatus(r)} style={{ background: "black", color: "white" }}>
@@ -231,7 +268,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                   );
                 })}
 
-                {/* Ghost row keeps header widths even if no recruiters match filter */}
+                {/* Ghost row to keep header widths when list is empty */}
                 {rows.length === 0 && (
                   <tr className="border-t opacity-0 select-none pointer-events-none">
                     {COLS.map((_, i) => (
@@ -247,20 +284,20 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
         </CardContent>
       </Card>
 
-      {/* ---------- Info Modal ---------- */}
+      {/* ---------- History Modal ---------- */}
       <Dialog open={openInfo} onOpenChange={setOpenInfo}>
-        <DialogContent className="max-w-[800px] h-auto">
+        <DialogContent className="max-w-[1024px]">
           {sel && (
             <>
               <DialogHeader>
-                <DialogTitle className="text-center">Info • {sel.name || "Recruiter"}</DialogTitle>
+                <DialogTitle className="text-center">History</DialogTitle>
               </DialogHeader>
 
-              {/* Avatar + Rename */}
-              <div className="grid md:grid-cols-[160px_1fr] gap-4 items-start">
+              {/* Avatar + Rename + Quick stats */}
+              <div className="grid md:grid-cols-[180px_1fr] gap-4 items-start">
                 {/* Avatar */}
                 <div className="grid gap-2 place-items-center">
-                  <div className="h-28 w-28 rounded-full bg-zinc-200 overflow-hidden grid place-items-center">
+                  <div className="h-32 w-32 rounded-full bg-zinc-200 overflow-hidden grid place-items-center">
                     {sel.avatar ? (
                       <img src={sel.avatar} alt="" className="h-full w-full object-cover" />
                     ) : (
@@ -269,20 +306,20 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                   </div>
                   <div className="flex gap-2">
                     <input
-                      ref={fileRef}
+                      ref={avatarFileRef}
                       type="file"
                       hidden
                       accept="image/*"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
-                        if (f) setAvatar(sel.id, f);
+                        if (f) setAvatar(sel.id, f, setSel);
                         e.target.value = "";
                       }}
                     />
-                    <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+                    <Button size="sm" variant="outline" onClick={() => avatarFileRef.current?.click()}>
                       <UserPlus className="h-4 w-4 mr-1" /> Add
                     </Button>
-                    <Button size="sm" style={{ background: "black", color: "white" }} onClick={() => removeAvatar(sel.id)}>
+                    <Button size="sm" style={{ background: "black", color: "white" }} onClick={() => removeAvatar(sel.id, setSel)}>
                       <UserX className="h-4 w-4 mr-1" /> Remove
                     </Button>
                   </div>
@@ -308,20 +345,20 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                       <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{rankAcr(sel.role)}</Pill>
                     </div>
                     <div>
-                      <div className="text-xs text-zinc-500">Avg</div>
+                      <div className="text-xs text-zinc-500">Average</div>
                       <Pill className={scoreColor(avg2(sel.id))}>{avg2(sel.id)}</Pill>
                     </div>
                     {(() => {
-                      const { b2, b4 } = boxes(sel.id);
+                      const { b2, b4 } = boxesOverall(sel.id);
                       return (
                         <>
                           <div>
-                            <div className="text-xs text-zinc-500">Box 2%</div>
-                            <div className={`font-semibold ${pctClassB2(b2)}`}>{b2}%</div>
+                            <div className="text-xs text-zinc-500">Box 2</div>
+                            <div className={`font-semibold ${pctClass(b2, 70)}`}>{b2}%</div>
                           </div>
                           <div>
-                            <div className="text-xs text-zinc-500">Box 4%</div>
-                            <div className={`font-semibold ${pctClassB4(b4)}`}>{b4}%</div>
+                            <div className="text-xs text-zinc-500">Box 4</div>
+                            <div className={`font-semibold ${pctClass(b4, 40)}`}>{b4}%</div>
                           </div>
                         </>
                       );
@@ -333,14 +370,18 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
               {/* History table */}
               <div className="mt-4 border rounded-lg overflow-hidden">
                 <div className="px-3 py-2 font-medium bg-zinc-50">History</div>
-                <div className="max-h-[320px] overflow-auto">
+                <div className="max-h-[420px] overflow-auto">
                   <table className="min-w-full text-sm">
                     <thead className="bg-white sticky top-0 z-10">
                       <tr className="border-b">
                         <th className="p-2 text-left">Date</th>
                         <th className="p-2 text-left">Zone</th>
-                        <th className="p-2 text-center">Game (EUR)</th>
                         <th className="p-2 text-center">Score</th>
+                        <th className="p-2 text-center">Box 2</th>
+                        <th className="p-2 text-center">Box 2*</th>
+                        <th className="p-2 text-center">Box 4</th>
+                        <th className="p-2 text-center">Box 4*</th>
+                        <th className="p-2 text-center">Sales Game</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -371,33 +412,6 @@ function toDataURL(file) {
   });
 }
 
-// Render History rows: stacked Zone, Game column, color-coded score
-function renderHistoryRows(history, recId) {
-  const rows = normalizeHistoryForRecruiter(history, recId);
-  if (!rows.length) {
-    return (
-      <tr className="border-t">
-        <td className="p-2 text-zinc-400" colSpan={4}>No history</td>
-      </tr>
-    );
-  }
-  return rows.map((e, i) => (
-    <tr key={i} className="border-t">
-      <td className="p-2">{fmtDate(e.at)}</td>
-      <td className="p-2">
-        {/* stacked vertically */}
-        <div className="flex flex-col text-xs">
-          {e.zone && <span>Zone {e.zone}</span>}
-          {e.zone2 && <span>Zone {e.zone2}</span>}
-          {e.zone3 && <span>Zone {e.zone3}</span>}
-        </div>
-      </td>
-      <td className="p-2 text-center">{Number(e.game || 0).toFixed(2)}</td>
-      <td className="p-2 text-center"><ScoreBadge v={e.score} /></td>
-    </tr>
-  ));
-}
-
 function fmtDate(d) {
   const dt = new Date(d || Date.now());
   const dd = String(dt.getDate()).padStart(2, "0");
@@ -406,35 +420,80 @@ function fmtDate(d) {
   return `${dd}-${mm}-${yyyy}`;
 }
 
+// Try to read per-entry fields flexibly
+function readNum(o, keys, def = 0) {
+  for (const k of keys) {
+    if (o?.[k] !== undefined && o?.[k] !== null && o?.[k] !== "") return Number(o[k]) || 0;
+  }
+  return def;
+}
+function readZone(o) {
+  return o.zone ?? o.zone1 ?? o.z1 ?? o.Zone ?? o.Zone1 ?? o.Z1 ?? "";
+}
 function normalizeHistoryForRecruiter(history, recId) {
   const out = [];
   if (!Array.isArray(history)) return out;
   for (const entry of history) {
-    // support both flat and team-grouped entries
+    // grouped by team
     if (entry?.team && Array.isArray(entry.team)) {
       for (const t of entry.team) {
-        if ((t.recruiterId || t.rid || t.id) !== recId) continue;
+        const rid = t.recruiterId ?? t.rid ?? t.id;
+        if (rid !== recId) continue;
         out.push({
           at: entry.date || t.at || Date.now(),
-          zone: t.zone || t.zone1 || t.z1,
-          zone2: t.zone2 || t.z2,
-          zone3: t.zone3 || t.z3,
-          game: t.game || t.GAME || 0,
-          score: t.score ?? t.total ?? t.SCORE ?? 0,
+          zone: readZone(t),
+          score: readNum(t, ["score", "total", "SCORE"]),
+          b2: readNum(t, ["box2", "b2", "B2"]),
+          b2s: readNum(t, ["box2s", "b2s", "B2S", "box2_star", "b2_star"]),
+          b4: readNum(t, ["box4", "b4", "B4"]),
+          b4s: readNum(t, ["box4s", "b4s", "B4S", "box4_star", "b4_star"]),
+          game: readNum(t, ["game", "GAME", "sales", "SalesGame"]),
         });
       }
-    } else if ((entry?.recruiterId || entry?.rid || entry?.id) === recId) {
+    } else {
+      const rid = entry?.recruiterId ?? entry?.rid ?? entry?.id;
+      if (rid !== recId) continue;
       out.push({
         at: entry.date || entry.at || Date.now(),
-        zone: entry.zone || entry.zone1 || entry.z1,
-        zone2: entry.zone2 || entry.z2,
-        zone3: entry.zone3 || entry.z3,
-        game: entry.game || entry.GAME || 0,
-        score: entry.score ?? entry.total ?? entry.SCORE ?? 0,
+        zone: readZone(entry),
+        score: readNum(entry, ["score", "total", "SCORE"]),
+        b2: readNum(entry, ["box2", "b2", "B2"]),
+        b2s: readNum(entry, ["box2s", "b2s", "B2S", "box2_star", "b2_star"]),
+        b4: readNum(entry, ["box4", "b4", "B4"]),
+        b4s: readNum(entry, ["box4s", "b4s", "B4S", "box4_star", "b4_star"]),
+        game: readNum(entry, ["game", "GAME", "sales", "SalesGame"]),
       });
     }
   }
-  // newest first
-  out.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  out.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()); // newest first
   return out;
+}
+
+function renderHistoryRows(history, recId) {
+  const rows = normalizeHistoryForRecruiter(history, recId);
+  if (!rows.length) {
+    return (
+      <tr className="border-t">
+        <td className="p-2 text-zinc-400" colSpan={8}>No history</td>
+      </tr>
+    );
+  }
+  return rows.map((e, i) => (
+    <tr key={i} className="border-t">
+      <td className="p-2">{fmtDate(e.at)}</td>
+      <td className="p-2">
+        <div className="flex flex-col text-xs">
+          {e.zone && <span>Zone {e.zone}</span>}
+          {e.zone2 && <span>Zone {e.zone2}</span>}
+          {e.zone3 && <span>Zone {e.zone3}</span>}
+        </div>
+      </td>
+      <td className="p-2 text-center"><ScoreBadge v={e.score} /></td>
+      <td className="p-2 text-center"><span className={`font-semibold ${pctClass(e.b2, 70)}`}>{Number(e.b2 || 0).toFixed(0)}%</span></td>
+      <td className="p-2 text-center"><span className={`font-semibold ${pctClass(e.b2s, 70)}`}>{Number(e.b2s || 0).toFixed(0)}%</span></td>
+      <td className="p-2 text-center"><span className={`font-semibold ${pctClass(e.b4, 40)}`}>{Number(e.b4 || 0).toFixed(0)}%</span></td>
+      <td className="p-2 text-center"><span className={`font-semibold ${pctClass(e.b4s, 40)}`}>{Number(e.b4s || 0).toFixed(0)}%</span></td>
+      <td className="p-2 text-center">{Number(e.game || 0).toFixed(2)}</td>
+    </tr>
+  ));
 }
