@@ -1,12 +1,10 @@
 // src/pages/Recruiters.jsx — Proago CRM
 // v2025-09-04
-// - Crewcode column
-// - Active/Inactive filter (black/white like Inflow Add/Import). Default = Active
-// - Headers: Average, Box 2, Box 4 (no % symbol)
-// - Rebalanced column widths (Form narrower) and centered where appropriate
-// - Info modal renamed to "History", larger, with columns: Date, Zone, Score, Box 2, Box 2*, Box 4, Box 4*, Sales Game
-// - Avatar add/remove reflects immediately while modal is open
-// - Audit logs for status/rename/avatar
+// - History modal maxed (wider)
+// - Role editable per row (dropdown) + audit log
+// - Info button border black
+// - Row status "Active" button black with white letters (Inactive too)
+// - Top filter buttons (Active/Inactive) enlarged (like Settings/Logout / Add/Import sizing)
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -28,14 +26,17 @@ import {
 const COLS = [
   { w: "22%" }, // Name
   { w: "10%" }, // Crewcode
-  { w: "10%" }, // Role
+  { w: "12%" }, // Role
   { w: "16%" }, // Form (last 5)
   { w: "10%" }, // Average
   { w: "10%" }, // Box 2
   { w: "10%" }, // Box 4
-  { w: "6%"  }, // Info
-  { w: "6%"  }, // Status toggle
+  { w: "5%"  }, // Info
+  { w: "5%"  }, // Status toggle
 ];
+
+// Common roles; any existing custom role will be added dynamically at runtime
+const ROLES_BASE = ["Rookie", "Agent", "Senior", "Leader", "Captain", "Manager"];
 
 // Coloring (Planning-like)
 const scoreColor = (n) => {
@@ -56,6 +57,15 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
   const [filter, setFilter] = useState("active"); // "active" | "inactive"
 
   const avatarFileRef = useRef(null);
+
+  // Ensure dropdown contains any custom roles present
+  const allRoles = useMemo(() => {
+    const present = new Set(ROLES_BASE);
+    (Array.isArray(recruiters) ? recruiters : []).forEach((r) => {
+      if (r?.role) present.add(String(r.role));
+    });
+    return Array.from(present);
+  }, [recruiters]);
 
   // Derived rows with filter + stable sort
   const rows = useMemo(() => {
@@ -81,7 +91,6 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
       recruiter: { id: rec.id, name: rec.name },
       to: (!rec.isInactive ? "Inactive" : "Active"),
     });
-    // If you were viewing inactive list and toggled to active, it will naturally drop out of the filtered table.
   };
 
   const rename = (id, newName) => {
@@ -95,6 +104,11 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
     const val = String(code || "").replace(/\D/g, "").slice(0, 5);
     setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, crewCode: val } : r)));
     addAuditLog({ area: "Recruiters", action: "Edit Crewcode", recruiter: { id }, crewCode: val });
+  };
+
+  const setRole = (id, role) => {
+    setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, role } : r)));
+    addAuditLog({ area: "Recruiters", action: "Change Role", recruiter: { id }, role });
   };
 
   const setAvatar = async (id, file, setSel) => {
@@ -135,13 +149,13 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
 
   return (
     <div className="grid gap-4">
-      {/* Header filter: Active / Inactive (black/white like Inflow buttons) */}
+      {/* Header filter: Active / Inactive (enlarged, black/white like Add/Import) */}
       <div className="flex items-center justify-between">
         <div />
         <div className="flex items-center gap-2">
           <Button
-            size="sm"
             onClick={() => setFilter("active")}
+            className="h-10 px-5"
             style={{
               background: "black",
               color: "white",
@@ -151,8 +165,8 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
             Active
           </Button>
           <Button
-            size="sm"
             onClick={() => setFilter("inactive")}
+            className="h-10 px-5"
             style={{
               background: "black",
               color: "white",
@@ -214,9 +228,19 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                         </div>
                       </td>
 
-                      {/* Role */}
+                      {/* Role editable (dropdown) */}
                       <td className="p-3 text-center">
-                        <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{rankAcr(r.role)}</Pill>
+                        <div className="mx-auto" style={{ maxWidth: 160 }}>
+                          <select
+                            className="h-10 w-full border rounded-md text-center"
+                            value={r.role || ""}
+                            onChange={(e) => setRole(r.id, e.target.value)}
+                          >
+                            {allRoles.map((role) => (
+                              <option key={role} value={role}>{role}</option>
+                            ))}
+                          </select>
+                        </div>
                       </td>
 
                       {/* Form last 5 */}
@@ -245,24 +269,26 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                         <span className={`font-semibold ${pctClass(b4, 40)}`}>{b4}%</span>
                       </td>
 
-                      {/* Info */}
+                      {/* Info (black border) */}
                       <td className="p-3 text-center">
-                        <Button size="sm" variant="outline" onClick={() => openModal(r)}>
+                        <Button
+                          onClick={() => openModal(r)}
+                          className="h-9 px-3"
+                          style={{ background: "white", color: "black", border: "1px solid #000" }}
+                        >
                           <Info className="h-4 w-4" />
                         </Button>
                       </td>
 
-                      {/* Status toggle: match earlier per-row styling (Active=white/black, Inactive=black/white) */}
+                      {/* Status toggle: BOTH states are black bg + white text per your ask */}
                       <td className="p-3 text-center">
-                        {r.isInactive ? (
-                          <Button size="sm" onClick={() => toggleStatus(r)} style={{ background: "black", color: "white" }}>
-                            Inactive
-                          </Button>
-                        ) : (
-                          <Button size="sm" onClick={() => toggleStatus(r)} style={{ background: "white", color: "black", border: "1px solid #111" }}>
-                            Active
-                          </Button>
-                        )}
+                        <Button
+                          onClick={() => toggleStatus(r)}
+                          className="h-9 px-3"
+                          style={{ background: "black", color: "white" }}
+                        >
+                          {r.isInactive ? "Inactive" : "Active"}
+                        </Button>
                       </td>
                     </tr>
                   );
@@ -284,9 +310,9 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
         </CardContent>
       </Card>
 
-      {/* ---------- History Modal ---------- */}
+      {/* ---------- History Modal (maxed) ---------- */}
       <Dialog open={openInfo} onOpenChange={setOpenInfo}>
-        <DialogContent className="max-w-[1024px]">
+        <DialogContent className="w-[96vw] max-w-[1400px]">
           {sel && (
             <>
               <DialogHeader>
@@ -294,10 +320,10 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
               </DialogHeader>
 
               {/* Avatar + Rename + Quick stats */}
-              <div className="grid md:grid-cols-[180px_1fr] gap-4 items-start">
+              <div className="grid md:grid-cols-[220px_1fr] gap-6 items-start">
                 {/* Avatar */}
-                <div className="grid gap-2 place-items-center">
-                  <div className="h-32 w-32 rounded-full bg-zinc-200 overflow-hidden grid place-items-center">
+                <div className="grid gap-3 place-items-center">
+                  <div className="h-36 w-36 rounded-full bg-zinc-200 overflow-hidden grid place-items-center">
                     {sel.avatar ? (
                       <img src={sel.avatar} alt="" className="h-full w-full object-cover" />
                     ) : (
@@ -326,7 +352,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                 </div>
 
                 {/* Rename + quick facts */}
-                <div className="grid gap-3">
+                <div className="grid gap-4">
                   <div>
                     <div className="text-sm font-medium mb-1">Name</div>
                     <Input
@@ -339,7 +365,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                     />
                   </div>
 
-                  <div className="flex flex-wrap gap-3 items-center">
+                  <div className="flex flex-wrap gap-4 items-center">
                     <div>
                       <div className="text-xs text-zinc-500">Role</div>
                       <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{rankAcr(sel.role)}</Pill>
@@ -367,10 +393,10 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                 </div>
               </div>
 
-              {/* History table */}
+              {/* History table — expanded columns */}
               <div className="mt-4 border rounded-lg overflow-hidden">
                 <div className="px-3 py-2 font-medium bg-zinc-50">History</div>
-                <div className="max-h-[420px] overflow-auto">
+                <div className="max-h-[60vh] overflow-auto">
                   <table className="min-w-full text-sm">
                     <thead className="bg-white sticky top-0 z-10">
                       <tr className="border-b">
