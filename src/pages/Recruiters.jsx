@@ -1,9 +1,14 @@
 // src/pages/Recruiters.jsx — Proago CRM
-// v2025-09-04
-// - Roles = RK, PR, PC, TC, SM, BM (editable per row)
-// - Form shows last 5 worked days inline "1-2-3-4-5" (no decimals), newest first, at most 5
-// - History modal wider (nearly full width), shows zones clearly, newest first, and shows Crewcode
-// - Info button black border; big top filter buttons; per-row status button black/white
+// v2025-09-04 (stabilized)
+// - Safe fallbacks for util helpers (prevents tab from failing to load)
+// - Roles fixed to: RK, PR, PC, TC, SM, BM
+// - Crewcode column (table only; NOT in History table)
+// - Form shows last 5 worked-day scores as "1-2-3-4-5" (no decimals), newest first, max 5
+// - Average 2 decimals; Box 2/4 thresholds (≥70 / ≥40) color coding
+// - Top filter buttons (Active / Inactive) large, black/white like Add/Import
+// - Per-row Status button black bg + white text
+// - Info button with black border
+// - History modal very wide; newest first; Zones stacked; shows Crewcode in quick facts
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -12,14 +17,26 @@ import { Input } from "../components/ui/input";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Badge } from "../components/ui/badge";
 import { Info, UserPlus, UserX } from "lucide-react";
-import {
-  addAuditLog,
-  last5ScoresFor,
-  boxPercentsLast8w,
-  rankAcr,
-  rankOrderVal,
-  titleCase,
-} from "../util";
+import * as U from "../util.js";
+
+// --- Safe util access (fallbacks so the tab never crashes) ---
+const addAuditLog = U.addAuditLog || (() => {});
+const titleCase = U.titleCase || ((s) => String(s || "").replace(/\s+/g, " ").trim());
+const rankOrderVal =
+  U.rankOrderVal ||
+  ((role) => {
+    const order = { RK: 1, PR: 2, PC: 3, TC: 4, SM: 5, BM: 6 };
+    return order[String(role || "").toUpperCase()] ?? 999;
+  });
+const rankAcr = U.rankAcr || ((r) => (r ? String(r).toUpperCase() : "—"));
+
+// If these don't exist, return safe defaults:
+const last5ScoresFor =
+  U.last5ScoresFor ||
+  ((_history, _recId) => []); // we won't crash if util doesn't provide it
+const boxPercentsLast8w =
+  U.boxPercentsLast8w ||
+  ((_history, _recId) => ({ b2: 0, b4: 0 }));
 
 // Column widths (sum = 100)
 const COLS = [
@@ -34,10 +51,10 @@ const COLS = [
   { w: "5%"  }, // Status toggle
 ];
 
-// Exact role list per your spec
+// Exact role list
 const ROLES = ["RK", "PR", "PC", "TC", "SM", "BM"];
 
-// Coloring (Planning-like)
+// Coloring like Planning
 const scoreColor = (n) => {
   const s = Number(n) || 0;
   if (s >= 3) return "bg-green-100 text-green-800 border-green-300";
@@ -52,7 +69,7 @@ const Pill = ({ children, className = "" }) => (
 const ScoreBadge = ({ v }) => <Pill className={scoreColor(v)}>{Number(v || 0).toFixed(2)}</Pill>;
 
 export default function Recruiters({ recruiters, setRecruiters, history, setHistory }) {
-  // Filters: default "Active"
+  // Filters: default Active
   const [filter, setFilter] = useState("active"); // "active" | "inactive"
 
   const avatarFileRef = useRef(null);
@@ -90,8 +107,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
   };
 
   const setCrewcode = (id, code) => {
-    // allow 5 digits (as discussed in Inflow hire)
-    const val = String(code || "").replace(/\D/g, "").slice(0, 5);
+    const val = String(code || "").replace(/\D/g, "").slice(0, 5); // 5 digits
     setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, crewCode: val } : r)));
     addAuditLog({ area: "Recruiters", action: "Edit Crewcode", recruiter: { id }, crewCode: val });
   };
@@ -105,58 +121,50 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
     if (!file) return;
     const dataUrl = await toDataURL(file);
     setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, avatar: dataUrl } : r)));
-    // reflect immediately in open modal
-    if (setSel) setSel((s) => (s && s.id === id ? { ...s, avatar: dataUrl } : s));
+    if (setSel) setSel((s) => (s && s.id === id ? { ...s, avatar: dataUrl } : s)); // live reflect
     addAuditLog({ area: "Recruiters", action: "Set Avatar", recruiter: { id } });
   };
 
   const removeAvatar = (id, setSel) => {
     setRecruiters((rs) => rs.map((r) => (r.id === id ? { ...r, avatar: "" } : r)));
-    if (setSel) setSel((s) => (s && s.id === id ? { ...s, avatar: "" } : s));
+    if (setSel) setSel((s) => (s && s.id === id ? { ...s, avatar: "" } : s)); // live reflect
     addAuditLog({ area: "Recruiters", action: "Remove Avatar", recruiter: { id } });
   };
 
   // utilities
-  function last5(recId) {
-    // newest → oldest from util; we only display the latest 5, as integers, joined with dashes
+  function formInlineLast5(recId) {
+    // newest → older; limit 5; NO decimals; "1-2-3-4-5"
     const arr = last5ScoresFor(history, recId) || [];
-    return arr.slice(0, 5).map((v) => Number(v || 0).toFixed(0));
+    return arr.slice(0, 5).map((v) => String(Math.round(Number(v || 0))));
   }
   function avg2(recId) {
     const arr = last5ScoresFor(history, recId) || [];
     if (!arr.length) return "0.00";
-    const n = arr.slice(0, 5).reduce((a, b) => a + (Number(b) || 0), 0) / Math.min(5, arr.length);
+    const use = arr.slice(0, 5);
+    const n = use.reduce((a, b) => a + (Number(b) || 0), 0) / use.length;
     return n.toFixed(2);
   }
   function boxesOverall(recId) {
-    return boxPercentsLast8w(history, recId); // { b2, b4 } in %
+    return boxPercentsLast8w(history, recId) || { b2: 0, b4: 0 };
   }
 
   return (
     <div className="grid gap-4">
-      {/* Header filter: Active / Inactive (enlarged, black/white like Add/Import) */}
+      {/* Header filter: Active / Inactive (large, black/white like Add/Import) */}
       <div className="flex items-center justify-between">
         <div />
         <div className="flex items-center gap-2">
           <Button
             onClick={() => setFilter("active")}
             className="h-10 px-5"
-            style={{
-              background: "black",
-              color: "white",
-              opacity: filter === "active" ? 1 : 0.6,
-            }}
+            style={{ background: "black", color: "white", opacity: filter === "active" ? 1 : 0.6 }}
           >
             Active
           </Button>
           <Button
             onClick={() => setFilter("inactive")}
             className="h-10 px-5"
-            style={{
-              background: "black",
-              color: "white",
-              opacity: filter === "inactive" ? 1 : 0.6,
-            }}
+            style={{ background: "black", color: "white", opacity: filter === "inactive" ? 1 : 0.6 }}
           >
             Inactive
           </Button>
@@ -191,7 +199,7 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
 
               <tbody>
                 {rows.map((r) => {
-                  const formInline = last5(r.id);               // ["3","4","2","5","3"]
+                  const formStr = formInlineLast5(r.id);       // ["3","4","2","5","3"]
                   const A = avg2(r.id);
                   const { b2, b4 } = boxesOverall(r.id);
 
@@ -213,12 +221,12 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
                         </div>
                       </td>
 
-                      {/* Role editable (dropdown — exact list) */}
+                      {/* Role dropdown (exact list) */}
                       <td className="p-3 text-center">
                         <div className="mx-auto" style={{ maxWidth: 160 }}>
                           <select
                             className="h-10 w-full border rounded-md text-center"
-                            value={r.role || ""}
+                            value={r.role || ROLES[0]}
                             onChange={(e) => setRole(r.id, e.target.value)}
                           >
                             {ROLES.map((role) => (
@@ -230,8 +238,8 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
 
                       {/* Form last 5 inline (no decimals) */}
                       <td className="p-3">
-                        {formInline.length ? (
-                          <span className="whitespace-nowrap">{formInline.join("-")}</span>
+                        {formStr.length ? (
+                          <span className="whitespace-nowrap">{formStr.join("-")}</span>
                         ) : (
                           <span className="text-zinc-400">No data</span>
                         )}
@@ -293,129 +301,146 @@ export default function Recruiters({ recruiters, setRecruiters, history, setHist
         </CardContent>
       </Card>
 
-      {/* ---------- History Modal (wider) ---------- */}
-      <Dialog open={openInfo} onOpenChange={setOpenInfo}>
-        <DialogContent className="w-[98vw] max-w-[1600px]">
-          {sel && (
-            <>
-              <DialogHeader>
-                <DialogTitle className="text-center">History</DialogTitle>
-              </DialogHeader>
-
-              {/* Avatar + Rename + Quick facts (now also Crewcode) */}
-              <div className="grid md:grid-cols-[220px_1fr] gap-6 items-start">
-                {/* Avatar */}
-                <div className="grid gap-3 place-items-center">
-                  <div className="h-36 w-36 rounded-full bg-zinc-200 overflow-hidden grid place-items-center">
-                    {sel.avatar ? (
-                      <img src={sel.avatar} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      <span className="text-zinc-500 text-sm">No photo</span>
-                    )}
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      ref={avatarFileRef}
-                      type="file"
-                      hidden
-                      accept="image/*"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) setAvatar(sel.id, f, setSel);
-                        e.target.value = "";
-                      }}
-                    />
-                    <Button size="sm" variant="outline" onClick={() => avatarFileRef.current?.click()}>
-                      <UserPlus className="h-4 w-4 mr-1" /> Add
-                    </Button>
-                    <Button size="sm" style={{ background: "black", color: "white" }} onClick={() => removeAvatar(sel.id, setSel)}>
-                      <UserX className="h-4 w-4 mr-1" /> Remove
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Rename + quick facts */}
-                <div className="grid gap-4">
-                  <div>
-                    <div className="text-sm font-medium mb-1">Name</div>
-                    <Input
-                      value={sel.name || ""}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        rename(sel.id, v);
-                        setSel((s) => ({ ...s, name: titleCase(v) }));
-                      }}
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap gap-6 items-center">
-                    <div>
-                      <div className="text-xs text-zinc-500">Role</div>
-                      <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{rankAcr(sel.role)}</Pill>
-                    </div>
-                    <div>
-                      <div className="text-xs text-zinc-500">Average</div>
-                      <Pill className={scoreColor(avg2(sel.id))}>{avg2(sel.id)}</Pill>
-                    </div>
-                    <div>
-                      <div className="text-xs text-zinc-500">Crewcode</div>
-                      <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{sel.crewCode || "—"}</Pill>
-                    </div>
-                    {(() => {
-                      const { b2, b4 } = boxPercentsLast8w(history, sel.id);
-                      return (
-                        <>
-                          <div>
-                            <div className="text-xs text-zinc-500">Box 2</div>
-                            <div className={`font-semibold ${pctClass(b2, 70)}`}>{b2}%</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-zinc-500">Box 4</div>
-                            <div className={`font-semibold ${pctClass(b4, 40)}`}>{b4}%</div>
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-
-              {/* History table */}
-              <div className="mt-4 border rounded-lg overflow-hidden">
-                <div className="px-3 py-2 font-medium bg-zinc-50">History</div>
-                <div className="max-h-[60vh] overflow-auto">
-                  <table className="min-w-full text-sm">
-                    <thead className="bg-white sticky top-0 z-10">
-                      <tr className="border-b">
-                        <th className="p-2 text-left">Date</th>
-                        <th className="p-2 text-left">Zone</th>
-                        <th className="p-2 text-center">Score</th>
-                        <th className="p-2 text-center">Box 2</th>
-                        <th className="p-2 text-center">Box 2*</th>
-                        <th className="p-2 text-center">Box 4</th>
-                        <th className="p-2 text-center">Box 4*</th>
-                        <th className="p-2 text-center">Sales Game</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {renderHistoryRows(history, sel.id)}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <DialogFooter className="justify-center">
-                <Button variant="outline" onClick={() => setOpenInfo(false)}>Close</Button>
-              </DialogFooter>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
+      {/* ---------- History Modal (very wide) ---------- */}
+      <HistoryModal
+        open={openInfo}
+        setOpen={setOpenInfo}
+        selIdRef={avatarFileRef}
+        sel={sel}
+        setSel={setSel}
+        rename={rename}
+        setAvatar={setAvatar}
+        removeAvatar={removeAvatar}
+        history={history}
+      />
     </div>
+  );
+
+  // Local modal handlers
+  function openModal(rec) { setSel(rec); setOpenInfo(true); }
+}
+
+// ---------- History Modal (separate component; safer diff) ----------
+function HistoryModal({ open, setOpen, sel, setSel, selIdRef, rename, setAvatar, removeAvatar, history }) {
+  if (!sel) return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="w-[98vw] max-w-[1600px]" />
+    </Dialog>
+  );
+
+  const { b2, b4 } = boxPercentsLast8w(history, sel.id) || { b2: 0, b4: 0 };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="w-[98vw] max-w-[1600px]">
+        <DialogHeader>
+          <DialogTitle className="text-center">History</DialogTitle>
+        </DialogHeader>
+
+        {/* Avatar + Rename + Quick facts (shows Crewcode) */}
+        <div className="grid md:grid-cols-[220px_1fr] gap-6 items-start">
+          {/* Avatar */}
+          <div className="grid gap-3 place-items-center">
+            <div className="h-36 w-36 rounded-full bg-zinc-200 overflow-hidden grid place-items-center">
+              {sel.avatar ? (
+                <img src={sel.avatar} alt="" className="h-full w-full object-cover" />
+              ) : (
+                <span className="text-zinc-500 text-sm">No photo</span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <input
+                ref={selIdRef}
+                type="file"
+                hidden
+                accept="image/*"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) setAvatar(sel.id, f, setSel);
+                  e.target.value = "";
+                }}
+              />
+              <Button size="sm" variant="outline" onClick={() => selIdRef.current?.click()}>
+                <UserPlus className="h-4 w-4 mr-1" /> Add
+              </Button>
+              <Button size="sm" style={{ background: "black", color: "white" }} onClick={() => removeAvatar(sel.id, setSel)}>
+                <UserX className="h-4 w-4 mr-1" /> Remove
+              </Button>
+            </div>
+          </div>
+
+          {/* Rename + quick facts */}
+          <div className="grid gap-4">
+            <div>
+              <div className="text-sm font-medium mb-1">Name</div>
+              <Input
+                value={sel.name || ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  rename(sel.id, v);
+                  setSel((s) => ({ ...s, name: titleCase(v) }));
+                }}
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-6 items-center">
+              <div>
+                <div className="text-xs text-zinc-500">Role</div>
+                <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{rankAcr(sel.role)}</Pill>
+              </div>
+              <div>
+                <div className="text-xs text-zinc-500">Average</div>
+                <Pill className={scoreColor(avgFromHistory(history, sel.id))}>{avgFromHistory(history, sel.id)}</Pill>
+              </div>
+              <div>
+                <div className="text-xs text-zinc-500">Crewcode</div>
+                <Pill className="bg-zinc-100 border-zinc-300 text-zinc-800">{sel.crewCode || "—"}</Pill>
+              </div>
+              <div>
+                <div className="text-xs text-zinc-500">Box 2</div>
+                <div className={`font-semibold ${pctClass(b2, 70)}`}>{b2}%</div>
+              </div>
+              <div>
+                <div className="text-xs text-zinc-500">Box 4</div>
+                <div className={`font-semibold ${pctClass(b4, 40)}`}>{b4}%</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* History table */}
+        <div className="mt-4 border rounded-lg overflow-hidden">
+          <div className="px-3 py-2 font-medium bg-zinc-50">History</div>
+          <div className="max-h-[60vh] overflow-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-white sticky top-0 z-10">
+                <tr className="border-b">
+                  <th className="p-2 text-left">Date</th>
+                  <th className="p-2 text-left">Zone</th>
+                  <th className="p-2 text-center">Score</th>
+                  <th className="p-2 text-center">Box 2</th>
+                  <th className="p-2 text-center">Box 2*</th>
+                  <th className="p-2 text-center">Box 4</th>
+                  <th className="p-2 text-center">Box 4*</th>
+                  <th className="p-2 text-center">Sales Game</th>
+                </tr>
+              </thead>
+              <tbody>
+                {renderHistoryRows(history, sel.id)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <DialogFooter className="justify-center">
+          <Button variant="outline" onClick={() => setOpen(false)}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-// ---------- helpers ----------
+// ---------- local helpers ----------
 function toDataURL(file) {
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
@@ -433,7 +458,6 @@ function fmtDate(d) {
   return `${dd}-${mm}-${yyyy}`;
 }
 
-// Try to read per-entry fields flexibly
 function readNum(o, keys, def = 0) {
   for (const k of keys) {
     if (o?.[k] !== undefined && o?.[k] !== null && o?.[k] !== "") return Number(o[k]) || 0;
@@ -443,6 +467,7 @@ function readNum(o, keys, def = 0) {
 function readZone(o) {
   return o.zone ?? o.zone1 ?? o.z1 ?? o.Zone ?? o.Zone1 ?? o.Z1 ?? "";
 }
+
 function normalizeHistoryForRecruiter(history, recId) {
   const out = [];
   if (!Array.isArray(history)) return out;
@@ -455,6 +480,8 @@ function normalizeHistoryForRecruiter(history, recId) {
         out.push({
           at: entry.date || t.at || Date.now(),
           zone: readZone(t),
+          zone2: t.zone2 || t.z2,
+          zone3: t.zone3 || t.z3,
           score: readNum(t, ["score", "total", "SCORE"]),
           b2: readNum(t, ["box2", "b2", "B2"]),
           b2s: readNum(t, ["box2s", "b2s", "B2S", "box2_star", "b2_star"]),
@@ -469,6 +496,8 @@ function normalizeHistoryForRecruiter(history, recId) {
       out.push({
         at: entry.date || entry.at || Date.now(),
         zone: readZone(entry),
+        zone2: entry.zone2 || entry.z2,
+        zone3: entry.zone3 || entry.z3,
         score: readNum(entry, ["score", "total", "SCORE"]),
         b2: readNum(entry, ["box2", "b2", "B2"]),
         b2s: readNum(entry, ["box2s", "b2s", "B2S", "box2_star", "b2_star"]),
@@ -496,7 +525,7 @@ function renderHistoryRows(history, recId) {
     <tr key={i} className="border-t">
       <td className="p-2">{fmtDate(e.at)}</td>
       <td className="p-2">
-        {/* Zones stacked vertically if multiple are present */}
+        {/* Zones stacked vertically */}
         <div className="flex flex-col text-xs">
           {e.zone && <span>Zone {e.zone}</span>}
           {e.zone2 && <span>Zone {e.zone2}</span>}
@@ -511,4 +540,12 @@ function renderHistoryRows(history, recId) {
       <td className="p-2 text-center">{Number(e.game || 0).toFixed(2)}</td>
     </tr>
   ));
+}
+
+function avgFromHistory(history, recId) {
+  const arr = last5ScoresFor(history, recId) || [];
+  if (!arr.length) return "0.00";
+  const use = arr.slice(0, 5);
+  const n = use.reduce((a, b) => a + (Number(b) || 0), 0) / use.length;
+  return n.toFixed(2);
 }
