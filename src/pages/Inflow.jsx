@@ -1,6 +1,5 @@
 // src/pages/Inflow.jsx — Proago CRM
 // v2025-09-03 • Inflow: local-edit cells (fix 1-char + Safari crash), name editable, tighter column locking
-// v2025-09-04 • Add ghost row so empty sections keep identical column symmetry
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -22,7 +21,7 @@ const COLS = [
   { w: "12%" }, // Source
   { w: "12%" }, // Date
   { w: "8%"  }, // Time
-  { w: "4%"  }, // Calls
+  { w: "4%"  }, // Calls (column width unchanged for alignment)
   { w: "8%"  }, // Actions
 ];
 
@@ -201,14 +200,14 @@ function compileTemplate(tpl, lead) {
     .replaceAll("{time}", t);
 }
 
-// Bell shows in Leads when calls >= 1
+// CHANGE: bell shows in Leads when calls >= 1
 function shouldShowBell(stage, lead) {
   if (stage === "leads") return (lead.calls ?? 0) >= 1;
   if (stage === "interview" || stage === "formation") return Boolean(lead.date && lead.time);
   return false;
 }
 
-// ---- Small local-edit cell (prevents 1-char bug) ----
+// ---- Small local-edit cell that only commits onBlur/Enter (prevents 1-char bug & heavy reflows)
 function EditableCell({ value, onCommit, type = "text", placeholder, inputMode, className = "" }) {
   const [val, setVal] = useState(value ?? "");
   React.useEffect(() => { setVal(value ?? ""); }, [value]);
@@ -348,6 +347,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
 
   // ---------- Stage move with memory ----------
+  // Forward: reset; Backward: restore previous values for the target stage.
   const move = (item, from, to) => {
     stableUpdate((next) => {
       const cur = next[from];
@@ -437,11 +437,14 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       try {
         const js = JSON.parse(txt);
 
+        // CASE A: array
         if (Array.isArray(js)) rows = js;
+        // CASE B: common array containers
         else if (Array.isArray(js?.results)) rows = js.results;
         else if (Array.isArray(js?.candidates)) rows = js.candidates;
         else if (Array.isArray(js?.data)) rows = js.data;
         else if (Array.isArray(js?.applications)) rows = js.applications;
+        // CASE C: single-object with applicant node
         else if (js?.applicant) {
           rows = [{
             name: js.applicant.fullName || js.applicant.name || "",
@@ -452,6 +455,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
           }];
         }
       } catch {
+        // Not standard JSON → try NDJSON
         rows = txt
           .split(/\r?\n/)
           .map((line) => { try { return JSON.parse(line); } catch { return null; } })
@@ -539,223 +543,205 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
   };
 
   // ---------- Section renderer ----------
-  const Section = ({ title, keyName, prev, nextKey, showCalls, enableHireDown }) => {
-    const rows = pipeline[keyName];
+  const Section = ({ title, keyName, prev, nextKey, showCalls, enableHireDown }) => (
+    <Card className="border-2">
+      <CardHeader>
+        <CardTitle className="flex justify-between items-center">
+          <span>{title}</span>
+          <Badge>{pipeline[keyName].length}</Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto border rounded-xl">
+          <table className="min-w-full text-sm table-fixed">
+            <colgroup>{COLS.map((c, i) => <col key={i} style={{ width: c.w }} />)}</colgroup>
+            <thead className="bg-zinc-50">
+              <tr>
+                <th className="p-3 text-left">Name</th>
+                <th className="p-3 text-left">Mobile</th>
+                <th className="p-3 text-left">Email</th>
+                <th className="p-3 text-center">Source</th>
+                <th className="p-3 text-center">Date</th>
+                <th className="p-3 text-center">Time</th>
+                <th className="p-3 text-center">{showCalls ? "Calls" : ""}</th>
+                <th className="p-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pipeline[keyName].map((x) => {
+                const stage = keyName;
+                const showBell = shouldShowBell(stage, x);
 
-    return (
-      <Card className="border-2">
-        <CardHeader>
-          <CardTitle className="flex justify-between items-center">
-            <span>{title}</span>
-            <Badge>{rows.length}</Badge>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto border rounded-xl">
-            <table className="min-w-full text-sm table-fixed">
-              <colgroup>{COLS.map((c, i) => <col key={i} style={{ width: c.w }} />)}</colgroup>
-              <thead className="bg-zinc-50">
-                <tr>
-                  <th className="p-3 text-left">Name</th>
-                  <th className="p-3 text-left">Mobile</th>
-                  <th className="p-3 text-left">Email</th>
-                  <th className="p-3 text-center">Source</th>
-                  <th className="p-3 text-center">Date</th>
-                  <th className="p-3 text-center">Time</th>
-                  <th className="p-3 text-center">{showCalls ? "Calls" : "\u00A0"}</th>
-                  <th className="p-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.length === 0 ? (
-                  // GHOST ROW: keeps section height and column symmetry when empty
-                  <tr className="border-t opacity-0 select-none pointer-events-none" key="ghost">
-                    <td className="p-3"><div className="h-10" /></td>
-                    <td className="p-3"><div className="h-10" /></td>
-                    <td className="p-3"><div className="h-10" /></td>
-                    <td className="p-3"><div className="h-10" /></td>
-                    <td className="p-3"><div className="h-10" /></td>
-                    <td className="p-3"><div className="h-10" /></td>
-                    <td className="p-3"><div className="h-10" /></td>
-                    <td className="p-3"><div className="h-10" /></td>
+                return (
+                  <tr key={x.id} className="border-t">
+                    {/* NAME (editable) */}
+                    <td className="p-3 font-medium min-w-0 overflow-hidden whitespace-nowrap">
+                      <EditableCell
+                        value={x.name}
+                        placeholder="Full name"
+                        onCommit={(val) =>
+                          stableUpdate((p) => {
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, name: val } : it));
+                          })
+                        }
+                      />
+                    </td>
+
+                    {/* MOBILE */}
+                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                      <EditableCell
+                        value={x.phone || ""}
+                        placeholder="mobile number"
+                        onCommit={(val) =>
+                          stableUpdate((p) => {
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, phone: val } : it));
+                          })
+                        }
+                      />
+                    </td>
+
+                    {/* EMAIL */}
+                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                      <EditableCell
+                        type="email"
+                        value={x.email || ""}
+                        placeholder="johndoe@gmail.com"
+                        onCommit={(val) =>
+                          stableUpdate((p) => {
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, email: val } : it));
+                          })
+                        }
+                      />
+                    </td>
+
+                    {/* SOURCE (read-only text keeps alignment) */}
+                    <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">{x.source}</td>
+
+                    {/* DATE */}
+                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                      <EditableCell
+                        type="date"
+                        className="date-center"
+                        value={x.date || ""}
+                        onCommit={(val) =>
+                          stableUpdate((p) => {
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, date: val } : it));
+                          })
+                        }
+                      />
+                    </td>
+
+                    {/* TIME */}
+                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                      <EditableCell
+                        type="time"
+                        className="time-center"
+                        value={x.time || ""}
+                        onCommit={(val) =>
+                          stableUpdate((p) => {
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, time: val } : it));
+                          })
+                        }
+                      />
+                    </td>
+
+                    {/* CALLS — bigger input like before, but column width unchanged */}
+                    <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">
+                      {showCalls ? (
+                        <div className="mx-auto" style={{ width: 64 }}>
+                          <EditableCell
+                            inputMode="numeric"
+                            className="text-center"
+                            value={String(x.calls ?? 0)}
+                            onCommit={(val) =>
+                              stableUpdate((p) => {
+                                const n = Math.max(0, Math.min(3, Number(String(val).replace(/\D/g, "")) || 0));
+                                p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, calls: n } : it));
+                              })
+                            }
+                          />
+                        </div>
+                      ) : (
+                        <div className="h-10" />
+                      )}
+                    </td>
+
+                    {/* Actions — Bell • Up • Down • Trash (fixed slots) */}
+                    <td className="p-3 flex gap-2 justify-end items-center">
+                      {/* Bell */}
+                      <BtnSlot>
+                        {showBell && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            title="Notify"
+                            className="p-0"
+                            style={{ background: "black", color: "white", width: BTN_W, height: BTN_H }}
+                            onClick={() => openNotify(x, stage)}
+                          >
+                            <Bell className="h-4 w-4" color="white" />
+                          </Button>
+                        )}
+                      </BtnSlot>
+
+                      {/* Up */}
+                      <BtnSlot>
+                        {prev && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            title="Back"
+                            className="p-0"
+                            style={{ width: BTN_W, height: BTN_H }}
+                            onClick={() => move(x, keyName, prev)}
+                          >
+                            <ChevronUp className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </BtnSlot>
+
+                      {/* Down (Formation -> Hire) */}
+                      <BtnSlot>
+                        {nextKey || enableHireDown ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            title={enableHireDown ? "Hire" : "Move"}
+                            className="p-0"
+                            style={{ width: BTN_W, height: BTN_H }}
+                            onClick={() => (enableHireDown ? hireFromFormation(x) : move(x, keyName, nextKey))}
+                          >
+                            <ChevronDown className="h-4 w-4" />
+                          </Button>
+                        ) : null}
+                      </BtnSlot>
+
+                      {/* Trash */}
+                      <BtnSlot>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="destructive"
+                          className="p-0"
+                          style={{ width: BTN_W, height: BTN_H }}
+                          onClick={() => del(x, keyName)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </BtnSlot>
+                    </td>
                   </tr>
-                ) : (
-                  rows.map((x) => {
-                    const stage = keyName;
-                    const showBell = shouldShowBell(stage, x);
-
-                    return (
-                      <tr key={x.id} className="border-t">
-                        {/* NAME (editable) */}
-                        <td className="p-3 font-medium min-w-0 overflow-hidden whitespace-nowrap">
-                          <EditableCell
-                            value={x.name}
-                            placeholder="Full name"
-                            onCommit={(val) =>
-                              stableUpdate((p) => {
-                                p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, name: val } : it));
-                              })
-                            }
-                          />
-                        </td>
-
-                        {/* MOBILE */}
-                        <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
-                          <EditableCell
-                            value={x.phone || ""}
-                            placeholder="mobile number"
-                            onCommit={(val) =>
-                              stableUpdate((p) => {
-                                p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, phone: val } : it));
-                              })
-                            }
-                          />
-                        </td>
-
-                        {/* EMAIL */}
-                        <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
-                          <EditableCell
-                            type="email"
-                            value={x.email || ""}
-                            placeholder="johndoe@gmail.com"
-                            onCommit={(val) =>
-                              stableUpdate((p) => {
-                                p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, email: val } : it));
-                              })
-                            }
-                          />
-                        </td>
-
-                        {/* SOURCE (read-only text keeps alignment) */}
-                        <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">{x.source}</td>
-
-                        {/* DATE */}
-                        <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
-                          <EditableCell
-                            type="date"
-                            className="date-center"
-                            value={x.date || ""}
-                            onCommit={(val) =>
-                              stableUpdate((p) => {
-                                p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, date: val } : it));
-                              })
-                            }
-                          />
-                        </td>
-
-                        {/* TIME */}
-                        <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
-                          <EditableCell
-                            type="time"
-                            className="time-center"
-                            value={x.time || ""}
-                            onCommit={(val) =>
-                              stableUpdate((p) => {
-                                p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, time: val } : it));
-                              })
-                            }
-                          />
-                        </td>
-
-                        {/* CALLS — bigger input like before, but column width unchanged */}
-                        <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">
-                          {showCalls ? (
-                            <div className="mx-auto" style={{ width: 64 }}>
-                              <EditableCell
-                                inputMode="numeric"
-                                className="text-center"
-                                value={String(x.calls ?? 0)}
-                                onCommit={(val) =>
-                                  stableUpdate((p) => {
-                                    const n = Math.max(0, Math.min(3, Number(String(val).replace(/\D/g, "")) || 0));
-                                    p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, calls: n } : it));
-                                  })
-                                }
-                              />
-                            </div>
-                          ) : (
-                            <div className="h-10" />
-                          )}
-                        </td>
-
-                        {/* Actions — Bell • Up • Down • Trash (fixed slots) */}
-                        <td className="p-3 flex gap-2 justify-end items-center">
-                          {/* Bell */}
-                          <BtnSlot>
-                            {showBell && (
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                title="Notify"
-                                className="p-0"
-                                style={{ background: "black", color: "white", width: BTN_W, height: BTN_H }}
-                                onClick={() => openNotify(x, stage)}
-                              >
-                                <Bell className="h-4 w-4" color="white" />
-                              </Button>
-                            )}
-                          </BtnSlot>
-
-                          {/* Up */}
-                          <BtnSlot>
-                            {prev && (
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                title="Back"
-                                className="p-0"
-                                style={{ width: BTN_W, height: BTN_H }}
-                                onClick={() => move(x, keyName, prev)}
-                              >
-                                <ChevronUp className="h-4 w-4" />
-                              </Button>
-                            )}
-                          </BtnSlot>
-
-                          {/* Down (Formation -> Hire) */}
-                          <BtnSlot>
-                            {nextKey || enableHireDown ? (
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                title={enableHireDown ? "Hire" : "Move"}
-                                className="p-0"
-                                style={{ width: BTN_W, height: BTN_H }}
-                                onClick={() => (enableHireDown ? hireFromFormation(x) : move(x, keyName, nextKey))}
-                              >
-                                <ChevronDown className="h-4 w-4" />
-                              </Button>
-                            ) : null}
-                          </BtnSlot>
-
-                          {/* Trash */}
-                          <BtnSlot>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="destructive"
-                              className="p-0"
-                              style={{ width: BTN_W, height: BTN_H }}
-                              onClick={() => del(x, keyName)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </BtnSlot>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  };
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
 
   // --------- Toolbar & layout ----------
   return (
@@ -799,7 +785,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         <DialogContent size="lg">
           <DialogHeader><DialogTitle className="text-center">Notify</DialogTitle></DialogHeader>
 
-          <div className="grid gap-3 place-items-center text-center">
+        <div className="grid gap-3 place-items-center text-center">
             {notifyLead && (
               <>
                 <div className="w-full max-w-xs">
