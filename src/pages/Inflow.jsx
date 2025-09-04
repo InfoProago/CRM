@@ -37,6 +37,7 @@ const DateCenterStyle = () => (
     input.date-center::-webkit-datetime-edit { text-align:center; }
     input[type="time"].time-center { text-align:center; }
     input[type="time"].time-center::-webkit-datetime-edit { text-align:center; }
+    table.sectionTable { table-layout: fixed; width: 100%; border-collapse: separate; border-spacing: 0; }
   `}</style>
 );
 
@@ -200,8 +201,9 @@ function compileTemplate(tpl, lead) {
     .replaceAll("{time}", t);
 }
 
+// Bell in Leads now at calls >= 1
 function shouldShowBell(stage, lead) {
-  if (stage === "leads") return (lead.calls ?? 0) >= 3;
+  if (stage === "leads") return (lead.calls ?? 0) >= 1; // changed from >= 3
   if (stage === "interview" || stage === "formation") return Boolean(lead.date && lead.time);
   return false;
 }
@@ -209,12 +211,9 @@ function shouldShowBell(stage, lead) {
 // ---- Small local-edit cell that only commits onBlur/Enter (prevents 1-char bug & heavy reflows)
 function EditableCell({ value, onCommit, type = "text", placeholder, inputMode, className = "" }) {
   const [val, setVal] = useState(value ?? "");
-  // keep local in sync if external changes (moves/import etc.)
   React.useEffect(() => { setVal(value ?? ""); }, [value]);
-
   const commit = () => { if (val !== value) onCommit(val); };
   const onKeyDown = (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); e.currentTarget.blur(); } };
-
   return (
     <Input
       type={type}
@@ -248,7 +247,6 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
     if (!nm) return alert("Name required.");
     if (!builtPhone && !email.trim()) return alert("At least Mobile or Email is required.");
     if (email && !email.includes("@")) return alert("Email must contain '@'.");
-
     const now = new Date();
     const lead = {
       id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
@@ -259,7 +257,7 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
       calls: Math.min(Math.max(Number(calls || 0), 0), 3),
       date: fmtISO(now),
       time: now.toTimeString().slice(0, 5),
-      _stageMeta: {}, // per-stage memory
+      _stageMeta: {},
     };
     onSave(lead);
     addAuditLog({ area: "Inflow", action: "Add Lead", lead: { id: lead.id, name: lead.name, source: lead.source } });
@@ -271,13 +269,11 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="md">
         <DialogHeader><DialogTitle className="text-center">Lead</DialogTitle></DialogHeader>
-
         <div className="grid gap-3 text-center items-center">
           <div className="grid gap-1">
             <Label>Full Name</Label>
             <Input placeholder="John Doe" className="text-center" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
-
           <div className="grid gap-1">
             <Label>Mobile</Label>
             <div className="flex gap-2 justify-center">
@@ -293,22 +289,16 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
               />
             </div>
           </div>
-
           <div className="grid gap-1">
             <Label>Email</Label>
             <Input type="email" placeholder="johndoe@gmail.com" className="text-center" value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
-
           <div className="grid gap-1">
             <Label>Source</Label>
             <select className="h-10 border rounded-md px-2 mx-auto" value={source} onChange={(e) => setSource(e.target.value)}>
-              <option>Indeed</option>
-              <option>Street</option>
-              <option>Referral</option>
-              <option>Other</option>
+              <option>Indeed</option><option>Street</option><option>Referral</option><option>Other</option>
             </select>
           </div>
-
           <div className="grid gap-1">
             <Label>Calls (0–3)</Label>
             <div className="w-12 mx-auto">
@@ -324,7 +314,6 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
             </div>
           </div>
         </div>
-
         <DialogFooter className="justify-center gap-2 mt-2">
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button type="button" style={{ background: "black", color: "white" }} onClick={save}>Save</Button>
@@ -343,38 +332,27 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
   const [notifyText, setNotifyText] = useState("");
   const [notifyLead, setNotifyLead] = useState(null);
   const [notifyStage, setNotifyStage] = useState(null);
-  const [notifyLang, setNotifyLang] = useState("lb"); // lb | fr | de
+  const [notifyLang, setNotifyLang] = useState("lb");
 
   const stableUpdate = (updater) =>
     setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
 
   // ---------- Stage move with memory ----------
-  // Forward: reset; Backward: restore previous values for the target stage.
   const move = (item, from, to) => {
     stableUpdate((next) => {
       const cur = next[from];
       const lead = cur.find((x) => x.id === item.id);
       if (!lead) return;
-
       if (!lead._stageMeta) lead._stageMeta = {};
-      // save from-stage state
       lead._stageMeta[from] = { date: lead.date || "", time: lead.time || "" };
-
-      // remove from the source list
       next[from] = cur.filter((x) => x.id !== item.id);
-
       const forward =
         (from === "leads" && to === "interview") ||
         (from === "interview" && to === "formation");
-
       const prior = lead._stageMeta[to];
-      const incoming = forward
-        ? { date: "", time: "" }
-        : { date: prior?.date || "", time: prior?.time || "" };
-
+      const incoming = forward ? { date: "", time: "" } : { date: prior?.date || "", time: prior?.time || "" };
       next[to] = [...next[to], { ...lead, ...incoming }];
     });
-
     addAuditLog({ area: "Inflow", action: "Move", from, to, lead: { id: item.id, name: item.name } });
   };
 
@@ -425,82 +403,53 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     calls: Math.min(Math.max(Number(j.calls || 0), 0), 3),
     date: /^\d{4}-\d{2}-\d{2}$/.test(j.date || "") ? j.date : fmtISO(new Date()),
     time: j.time || new Date().toTimeString().slice(0, 5),
-    _stageMeta: {}, // ensure memory for imported
+    _stageMeta: {},
   });
 
   const onImport = async (file) => {
     if (!file) return;
     try {
       let txt = await file.text();
-      txt = txt.replace(/^\uFEFF/, ""); // strip BOM
+      txt = txt.replace(/^\uFEFF/, "");
       let rows = [];
-
-      // Try JSON object/array first
       try {
         const js = JSON.parse(txt);
-
-        // CASE A: array
         if (Array.isArray(js)) rows = js;
-        // CASE B: common array containers
         else if (Array.isArray(js?.results)) rows = js.results;
         else if (Array.isArray(js?.candidates)) rows = js.candidates;
         else if (Array.isArray(js?.data)) rows = js.data;
         else if (Array.isArray(js?.applications)) rows = js.applications;
-        // CASE C: single-object with applicant node
         else if (js?.applicant) {
           rows = [{
             name: js.applicant.fullName || js.applicant.name || "",
             email: js.applicant.email || js.applicant.mail || "",
             phone: js.applicant.phoneNumber || js.applicant.phone || js.applicant.mobile || "",
-            source: "Indeed",
-            date: "", time: "",
+            source: "Indeed", date: "", time: "",
           }];
         }
       } catch {
-        // Not standard JSON → try NDJSON
-        rows = txt
-          .split(/\r?\n/)
-          .map((line) => { try { return JSON.parse(line); } catch { return null; } })
-          .filter(Boolean);
+        rows = txt.split(/\r?\n/).map((line) => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
       }
-
-      // CSV fallback
       if (!rows.length && txt.includes(",") && txt.includes("\n")) rows = parseMaybeCSV(txt);
-
       if (!rows.length) { alert("Could not parse this file. Please upload an Indeed JSON or CSV export."); return; }
 
       const leads = rows
         .map((row) => {
           const name =
-            row.name ||
-            row.full_name ||
-            row.candidate ||
+            row.name || row.full_name || row.candidate ||
             `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
-            row.applicant?.fullName ||
-            "";
-
+            row.applicant?.fullName || "";
           const phone =
-            row.phone ||
-            row.phone_number ||
-            row.mobile ||
-            row.contact?.phone ||
-            row.contact?.phones?.[0] ||
-            row.applicant?.phoneNumber ||
-            "";
-
+            row.phone || row.phone_number || row.mobile ||
+            row.contact?.phone || row.contact?.phones?.[0] ||
+            row.applicant?.phoneNumber || "";
           const email =
-            row.email ||
-            row.mail ||
-            row.contact?.email ||
-            row.contact?.emails?.[0] ||
-            row.applicant?.email ||
-            "";
-
+            row.email || row.mail || row.contact?.email ||
+            row.contact?.emails?.[0] || row.applicant?.email || "";
           const source = row.source || row.platform || "Indeed";
           const calls = row.calls ?? 0;
           const date = row.date || row.applied_at || row.created_at || row.timestamp || "";
           const time = row.time || "";
-
           return { name, phone, email, source, calls, date, time };
         })
         .filter((j) => j.name && (j.phone || j.email))
@@ -554,8 +503,8 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="overflow-x-auto border rounded-xl">
-          <table className="min-w-full text-sm table-fixed">
+        <div className="border rounded-xl">
+          <table className="sectionTable text-sm">
             <colgroup>{COLS.map((c, i) => <col key={i} style={{ width: c.w }} />)}</colgroup>
             <thead className="bg-zinc-50">
               <tr>
@@ -570,174 +519,181 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
               </tr>
             </thead>
             <tbody>
-              {pipeline[keyName].map((x) => {
-                const stage = keyName;
-                const showBell = shouldShowBell(stage, x);
+              {pipeline[keyName].length === 0 ? (
+                // Ghost row keeps exact column layout when section is empty
+                <tr className="border-t">
+                  <td className="p-3 text-zinc-400 italic">No entries</td>
+                  <td className="p-3" />
+                  <td className="p-3" />
+                  <td className="p-3" />
+                  <td className="p-3" />
+                  <td className="p-3" />
+                  <td className="p-3" />
+                  <td className="p-3" />
+                </tr>
+              ) : (
+                pipeline[keyName].map((x) => {
+                  const stage = keyName;
+                  const showBell = shouldShowBell(stage, x);
 
-                return (
-                  <tr key={x.id} className="border-t">
-                    {/* NAME (editable) */}
-                    <td className="p-3 font-medium min-w-0 overflow-hidden whitespace-nowrap">
-                      <EditableCell
-                        value={x.name}
-                        placeholder="Full name"
-                        onCommit={(val) =>
-                          stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, name: val } : it));
-                          })
-                        }
-                      />
-                    </td>
+                  return (
+                    <tr key={x.id} className="border-t">
+                      {/* NAME (editable) */}
+                      <td className="p-3 font-medium min-w-0 overflow-hidden whitespace-nowrap">
+                        <EditableCell
+                          value={x.name}
+                          placeholder="Full name"
+                          onCommit={(val) =>
+                            stableUpdate((p) => {
+                              p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, name: val } : it));
+                            })
+                          }
+                        />
+                      </td>
 
-                    {/* MOBILE */}
-                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
-                      <EditableCell
-                        value={x.phone || ""}
-                        placeholder="mobile number"
-                        onCommit={(val) =>
-                          stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, phone: val } : it));
-                          })
-                        }
-                      />
-                    </td>
+                      {/* MOBILE */}
+                      <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                        <EditableCell
+                          value={x.phone || ""}
+                          placeholder="mobile number"
+                          onCommit={(val) =>
+                            stableUpdate((p) => {
+                              p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, phone: val } : it));
+                            })
+                          }
+                        />
+                      </td>
 
-                    {/* EMAIL */}
-                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
-                      <EditableCell
-                        type="email"
-                        value={x.email || ""}
-                        placeholder="johndoe@gmail.com"
-                        onCommit={(val) =>
-                          stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, email: val } : it));
-                          })
-                        }
-                      />
-                    </td>
+                      {/* EMAIL */}
+                      <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                        <EditableCell
+                          type="email"
+                          value={x.email || ""}
+                          placeholder="johndoe@gmail.com"
+                          onCommit={(val) =>
+                            stableUpdate((p) => {
+                              p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, email: val } : it));
+                            })
+                          }
+                        />
+                      </td>
 
-                    {/* SOURCE (read-only text keeps alignment) */}
-                    <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">{x.source}</td>
+                      {/* SOURCE */}
+                      <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">{x.source}</td>
 
-                    {/* DATE */}
-                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
-                      <EditableCell
-                        type="date"
-                        className="date-center"
-                        value={x.date || ""}
-                        onCommit={(val) =>
-                          stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, date: val } : it));
-                          })
-                        }
-                      />
-                    </td>
+                      {/* DATE */}
+                      <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                        <EditableCell
+                          type="date"
+                          className="date-center"
+                          value={x.date || ""}
+                          onCommit={(val) =>
+                            stableUpdate((p) => {
+                              p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, date: val } : it));
+                            })
+                          }
+                        />
+                      </td>
 
-                    {/* TIME */}
-                    <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
-                      <EditableCell
-                        type="time"
-                        className="time-center"
-                        value={x.time || ""}
-                        onCommit={(val) =>
-                          stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, time: val } : it));
-                          })
-                        }
-                      />
-                    </td>
+                      {/* TIME */}
+                      <td className="p-3 min-w-0 overflow-hidden whitespace-nowrap">
+                        <EditableCell
+                          type="time"
+                          className="time-center"
+                          value={x.time || ""}
+                          onCommit={(val) =>
+                            stableUpdate((p) => {
+                              p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, time: val } : it));
+                            })
+                          }
+                        />
+                      </td>
 
-                    {/* CALLS — bigger input like before, but column width unchanged */}
-                    <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">
-                      {showCalls ? (
-                        <div className="mx-auto" style={{ width: 64 }}>
-                          <EditableCell
-                            inputMode="numeric"
-                            className="text-center"
-                            value={String(x.calls ?? 0)}
-                            onCommit={(val) =>
-                              stableUpdate((p) => {
-                                const n = Math.max(0, Math.min(3, Number(String(val).replace(/\D/g, "")) || 0));
-                                p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, calls: n } : it));
-                              })
-                            }
-                          />
-                        </div>
-                      ) : (
-                        <div className="h-10" />
-                      )}
-                    </td>
-
-                    {/* Actions — Bell • Up • Down • Trash (fixed slots) */}
-                    <td className="p-3 flex gap-2 justify-end items-center">
-                      {/* Bell */}
-                      <BtnSlot>
-                        {showBell && (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            title="Notify"
-                            className="p-0"
-                            style={{ background: "black", color: "white", width: BTN_W, height: BTN_H }}
-                            onClick={() => openNotify(x, stage)}
-                          >
-                            <Bell className="h-4 w-4" color="white" />
-                          </Button>
+                      {/* CALLS — wider input, col width unchanged */}
+                      <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">
+                        {showCalls ? (
+                          <div className="mx-auto" style={{ width: 64 }}>
+                            <EditableCell
+                              inputMode="numeric"
+                              className="text-center"
+                              value={String(x.calls ?? 0)}
+                              onCommit={(val) =>
+                                stableUpdate((p) => {
+                                  const n = Math.max(0, Math.min(3, Number(String(val).replace(/\D/g, "")) || 0));
+                                  p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, calls: n } : it));
+                                })
+                              }
+                            />
+                          </div>
+                        ) : (
+                          <div className="h-10" />
                         )}
-                      </BtnSlot>
+                      </td>
 
-                      {/* Up */}
-                      <BtnSlot>
-                        {prev && (
+                      {/* Actions — Bell • Up • Down • Trash */}
+                      <td className="p-3 flex gap-2 justify-end items-center">
+                        <BtnSlot>
+                          {showBell && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              title="Notify"
+                              className="p-0"
+                              style={{ background: "black", color: "white", width: BTN_W, height: BTN_H }}
+                              onClick={() => openNotify(x, stage)}
+                            >
+                              <Bell className="h-4 w-4" color="white" />
+                            </Button>
+                          )}
+                        </BtnSlot>
+                        <BtnSlot>
+                          {prev && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              title="Back"
+                              className="p-0"
+                              style={{ width: BTN_W, height: BTN_H }}
+                              onClick={() => move(x, keyName, prev)}
+                            >
+                              <ChevronUp className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </BtnSlot>
+                        <BtnSlot>
+                          {nextKey || enableHireDown ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              title={enableHireDown ? "Hire" : "Move"}
+                              className="p-0"
+                              style={{ width: BTN_W, height: BTN_H }}
+                              onClick={() => (enableHireDown ? hireFromFormation(x) : move(x, keyName, nextKey))}
+                            >
+                              <ChevronDown className="h-4 w-4" />
+                            </Button>
+                          ) : null}
+                        </BtnSlot>
+                        <BtnSlot>
                           <Button
                             type="button"
                             size="sm"
-                            variant="outline"
-                            title="Back"
+                            variant="destructive"
                             className="p-0"
                             style={{ width: BTN_W, height: BTN_H }}
-                            onClick={() => move(x, keyName, prev)}
+                            onClick={() => del(x, keyName)}
                           >
-                            <ChevronUp className="h-4 w-4" />
+                            <Trash2 className="h-4 w-4" />
                           </Button>
-                        )}
-                      </BtnSlot>
-
-                      {/* Down (Formation -> Hire) */}
-                      <BtnSlot>
-                        {nextKey || enableHireDown ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            title={enableHireDown ? "Hire" : "Move"}
-                            className="p-0"
-                            style={{ width: BTN_W, height: BTN_H }}
-                            onClick={() => (enableHireDown ? hireFromFormation(x) : move(x, keyName, nextKey))}
-                          >
-                            <ChevronDown className="h-4 w-4" />
-                          </Button>
-                        ) : null}
-                      </BtnSlot>
-
-                      {/* Trash */}
-                      <BtnSlot>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="destructive"
-                          className="p-0"
-                          style={{ width: BTN_W, height: BTN_H }}
-                          onClick={() => del(x, keyName)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </BtnSlot>
-                    </td>
-                  </tr>
-                );
-              })}
+                        </BtnSlot>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
@@ -771,7 +727,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       </div>
 
       {/* Sections */}
-      <Section title="Leads" keyName="leads" nextKey="interview" showCalls />
+      <Section title="Leads"     keyName="leads"     nextKey="interview" showCalls />
       <Section title="Interview" keyName="interview" prev="leads" nextKey="formation" showCalls={false} />
       <Section title="Formation" keyName="formation" prev="interview" showCalls={false} enableHireDown />
 
@@ -786,7 +742,6 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       <Dialog open={notifyOpen} onOpenChange={setNotifyOpen}>
         <DialogContent size="lg">
           <DialogHeader><DialogTitle className="text-center">Notify</DialogTitle></DialogHeader>
-
           <div className="grid gap-3 place-items-center text-center">
             {notifyLead && (
               <>
@@ -809,7 +764,6 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                     <option value="de">Deutsch</option>
                   </select>
                 </div>
-
                 <textarea
                   className="border rounded-md p-2 w-full h-56"
                   value={notifyText}
@@ -818,7 +772,6 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
               </>
             )}
           </div>
-
           <DialogFooter className="justify-center gap-2">
             <Button type="button" variant="outline" onClick={() => setNotifyOpen(false)}>Cancel</Button>
             <Button type="button" style={{ background: "black", color: "white" }} onClick={sendNotify}>Send</Button>
