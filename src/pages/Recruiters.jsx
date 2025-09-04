@@ -1,15 +1,8 @@
 // src/pages/Recruiters.jsx — Proago CRM
-// v2025-09-04r • Strict to-spec: no extra buttons, proper styling, live Planning linkage
-// - Header toggle: Active / Inactive — both styled like Inflow Add/Import (black/white)
-// - Row Status: "Active" / "Inactive" (black/white button style; outline NOT used per your ask)
-// - Info button: black border
-// - Form: latest 5 scores from Planning (newest→oldest), shown as colored integers "1-2-3-4-5" (no decimals)
-//   colors like Planning: >=3 green, >=2 yellow, else red
-// - Average: 2 decimals
-// - Box 2, Box 4: show totals of last shift (Box2+Box2*, Box4+Box4*) as %, colored with 70/40 rules
-// - History modal: 90% width/height; columns: Date • Zone • Score • Box 2 • Box 2* • Box 4 • Box 4* • Sales Game
-// - Dates in dd/mm/yyyy; History newest-first
-// - Crewcode NOT a table column (as requested), but shown in History identity block
+// v2025-09-04 • Form oldest→newest (left→right, max 5), History newest→oldest, Average 2dp
+// Active/Inactive header (black/white), Info button black border, Status toggle black/white,
+// Box 2/4 thresholds from latest shift (B2>=70 green, B4>=40 green), dd/mm/yyyy dates in modal.
+// No Crewcode column in main table; Crewcode appears in History identity row.
 
 import React, { useEffect, useMemo, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "../components/ui/card";
@@ -22,33 +15,41 @@ import * as U from "../util.js";
 
 const { load, K, titleCase } = U;
 
-// ---------- helpers ----------
-
-// dd/mm/yyyy with safe YYYY-MM-DD support (no TZ drift)
+// ---------- small utils ----------
 function fmtDDMMYYYY(v) {
   const m = String(v || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`; // dd/mm/yyyy
   try { return new Date(v).toLocaleDateString("en-GB"); } catch { return v || ""; }
 }
+const pct = (n) => `${Number(n || 0)}%`;
 
-const ROLES = ["RK", "PR", "PC", "TC", "SM", "BM"];
+function formColor(n) {
+  const v = Number(n) || 0;
+  if (v >= 3) return "text-green-700";
+  if (v >= 2) return "text-yellow-700";
+  return "text-red-700";
+}
 
-// Planning reader (checks common keys; simple & safe)
+// Read Planning via expected util keys; safe if empty
 function readPlanningDays() {
-  const cands = [load(K.planning), load(K.planningDays), load("planning"), load("Planning")].filter(Array.isArray);
-  const days = cands.reduce((a, b) => (a?.length || 0) >= (b?.length || 0) ? a : b) || [];
-  return Array.isArray(days) ? days : [];
+  const a = load?.(K?.planning);
+  const b = load?.(K?.planningDays);
+  if (Array.isArray(a) && a.length) return a;
+  if (Array.isArray(b) && b.length) return b;
+  return [];
 }
 
 function normalizeDay(day) {
   const date = day?.date || day?.day || day?.id || "";
   const teams = day?.teams || day?.zones || [];
-  const rows = [];
+  const out = [];
   for (const t of teams) {
-    const zone = (t?.zone && (t.zone.name || t.zone.label || t.zone)) || t?.label || t?.name || t?.zone || "";
+    const zone =
+      (t?.zone && (t.zone.name || t.zone.label || t.zone)) ||
+      t?.label || t?.name || t?.zone || "";
     const recs = t?.recruiters || t?.members || t?.staff || [];
     for (const r of recs) {
-      rows.push({
+      out.push({
         date,
         zone: String(zone || ""),
         name: r?.name || r?.fullName || "",
@@ -62,59 +63,58 @@ function normalizeDay(day) {
       });
     }
   }
-  return rows;
+  return out;
 }
 
 function readAllShifts() {
   const rows = [];
   for (const d of readPlanningDays()) rows.push(...normalizeDay(d));
-  // newest first by ISO-like date
+  // sort once newest→oldest for reuse
   rows.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   return rows;
 }
 
-// Name matcher tolerant to small differences; crewCode wins when present on both
-function matchRecruiterShift(rec, s) {
-  const ccRec = String(rec?.crewCode || rec?.crewcode || "").trim();
-  const ccSh = String(s?.crewCode || "").trim();
-  if (ccRec && ccSh) return ccRec === ccSh;
+// name match tolerant; crewCode wins when present on both
+function matchRecruiter(rec, s) {
+  const ccR = String(rec?.crewCode || rec?.crewcode || "").trim();
+  const ccS = String(s?.crewCode || "").trim();
+  if (ccR && ccS) return ccR === ccS;
   const a = String(rec?.name || "").toLowerCase().trim().replace(/\s+/g, " ");
   const b = String(s?.name || "").toLowerCase().trim().replace(/\s+/g, " ");
   if (!a || !b) return false;
   if (a === b) return true;
-  const ta = new Set(a.split(" ").filter(Boolean));
-  const tb = new Set(b.split(" ").filter(Boolean));
-  let hits = 0; for (const t of ta) if (tb.has(t)) hits++;
-  return hits >= Math.min(ta.size, 2);
+  const SA = new Set(a.split(" ").filter(Boolean));
+  const SB = new Set(b.split(" ").filter(Boolean));
+  let hits = 0; for (const t of SA) if (SB.has(t)) hits++;
+  return hits >= Math.min(SA.size, 2);
 }
 
 function shiftsForRecruiter(all, rec) {
-  return all.filter((s) => matchRecruiterShift(rec, s));
+  return all.filter((s) => matchRecruiter(rec, s));
 }
 
-function formLast5(all, rec) {
-  return shiftsForRecruiter(all, rec).slice(0, 5).map((s) => Math.round(Number(s.score || 0)));
+// ---- FORM ORDER: oldest→newest (left→right), max 5 ----
+// Take all shifts (already newest→oldest), slice latest 5, then reverse for display.
+function formOldestToNewest5(all, rec) {
+  const latest5 = shiftsForRecruiter(all, rec).slice(0, 5);
+  return latest5.reverse().map((s) => Math.round(Number(s.score || 0)));
 }
 
-function formColor(n) {
-  const v = Number(n) || 0;
-  if (v >= 3) return "text-green-700";
-  if (v >= 2) return "text-yellow-700";
-  return "text-red-700";
+function avg2(nums) {
+  if (!nums?.length) return "0.00";
+  const n = nums.reduce((a, b) => a + Number(b || 0), 0) / nums.length;
+  return n.toFixed(2);
 }
-
-function pct(n) { return `${Number(n || 0)}%`; }
 
 // ---------- component ----------
-
 export default function Recruiters({ recruiters = [], setRecruiters }) {
   const [showInactive, setShowInactive] = useState(false);
 
-  // keep in sync with Planning; light polling (safe, no UI) and storage/focus triggers
+  // keep modestly in sync with Planning
   const [planRows, setPlanRows] = useState(() => readAllShifts());
   useEffect(() => {
     const refresh = () => setPlanRows(readAllShifts());
-    const id = setInterval(refresh, 1200);
+    const id = setInterval(refresh, 1500);
     window.addEventListener("storage", refresh);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
@@ -126,16 +126,20 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
     };
   }, []);
 
-  const rows = useMemo(
-    () => (showInactive ? recruiters.filter((r) => r.active === false) : recruiters.filter((r) => r.active !== false)),
+  const list = useMemo(
+    () =>
+      showInactive
+        ? recruiters.filter((r) => r.active === false)
+        : recruiters.filter((r) => r.active !== false),
     [recruiters, showInactive]
   );
 
-  const updateRec = (id, patch) => setRecruiters((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const updateRec = (id, patch) =>
+    setRecruiters?.((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
 
-  const [open, setOpen] = useState(false);
-  const [sel, setSel] = useState(null);
-  const openHistory = (r) => { setSel(r); setOpen(true); };
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [infoRec, setInfoRec] = useState(null);
+  const openHistory = (r) => { setInfoRec(r); setInfoOpen(true); };
 
   return (
     <div className="grid gap-4">
@@ -153,7 +157,7 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
             <span>Recruiters</span>
-            <Badge>{rows.length}</Badge>
+            <Badge>{list.length}</Badge>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -162,7 +166,7 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
               <colgroup>
                 <col style={{ width: "30%" }} /> {/* Name */}
                 <col style={{ width: "12%" }} /> {/* Role */}
-                <col style={{ width: "22%" }} /> {/* Form (centered between Role & Average) */}
+                <col style={{ width: "22%" }} /> {/* Form */}
                 <col style={{ width: "12%" }} /> {/* Average */}
                 <col style={{ width: "12%" }} /> {/* Box 2 */}
                 <col style={{ width: "12%" }} /> {/* Box 4 */}
@@ -182,26 +186,26 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => {
+                {list.map((r) => {
                   const shifts = shiftsForRecruiter(planRows, r);
-                  const form = formLast5(planRows, r);
-                  const avg = (() => {
-                    const vals = shifts.map((s) => Number(s.score || 0));
-                    return vals.length ? (vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(2) : "0.00";
-                  })();
+                  const form = formOldestToNewest5(planRows, r);
+                  const avg = avg2(shifts.map((s) => Number(s.score || 0)));
 
-                  // last shift totals for Box % display
+                  // latest shift totals for Box % display
                   const last = shifts[0] || {};
-                  const b2T = Number(last.box2 || 0) + Number(last.box2s || 0);
-                  const b4T = Number(last.box4 || 0) + Number(last.box4s || 0);
-                  const b2Class = b2T >= 70 ? "text-green-700" : "text-red-700";
-                  const b4Class = b4T >= 40 ? "text-green-700" : "text-red-700";
+                  const box2Tot = Number(last.box2 || 0) + Number(last.box2s || 0);
+                  const box4Tot = Number(last.box4 || 0) + Number(last.box4s || 0);
+                  const b2Class = box2Tot >= 70 ? "text-green-700" : "text-red-700";
+                  const b4Class = box4Tot >= 40 ? "text-green-700" : "text-red-700";
 
                   return (
                     <tr key={r.id} className="border-t">
                       {/* Name */}
                       <td className="p-3">
-                        <Input value={r.name || ""} onChange={(e) => updateRec(r.id, { name: titleCase(e.target.value) })} />
+                        <Input
+                          value={r.name || ""}
+                          onChange={(e) => updateRec(r.id, { name: titleCase(e.target.value) })}
+                        />
                       </td>
 
                       {/* Role */}
@@ -211,15 +215,16 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                           value={r.role || "RK"}
                           onChange={(e) => updateRec(r.id, { role: e.target.value })}
                         >
-                          {ROLES.map((x) => (
-                            <option key={x} value={x}>
-                              {x}
-                            </option>
-                          ))}
+                          <option>RK</option>
+                          <option>PR</option>
+                          <option>PC</option>
+                          <option>TC</option>
+                          <option>SM</option>
+                          <option>BM</option>
                         </select>
                       </td>
 
-                      {/* Form (centered, hyphen-separated, colored ints) */}
+                      {/* Form (oldest→newest, no decimals, colored ints) */}
                       <td className="p-3 text-center whitespace-nowrap">
                         {form.length ? (
                           form.map((n, i) => (
@@ -238,14 +243,14 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                         <span className="inline-block rounded-full bg-zinc-100 px-2 py-1">{avg}</span>
                       </td>
 
-                      {/* Box 2 total % */}
+                      {/* Box 2 total % from latest shift */}
                       <td className="p-3 text-center">
-                        <span className={b2Class}>{pct(b2T)}</span>
+                        <span className={b2Class}>{pct(box2Tot)}</span>
                       </td>
 
-                      {/* Box 4 total % */}
+                      {/* Box 4 total % from latest shift */}
                       <td className="p-3 text-center">
-                        <span className={b4Class}>{pct(b4T)}</span>
+                        <span className={b4Class}>{pct(box4Tot)}</span>
                       </td>
 
                       {/* Info (black border) */}
@@ -261,12 +266,12 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                         </Button>
                       </td>
 
-                      {/* Status (black/white style) */}
+                      {/* Status (single black/white toggle) */}
                       <td className="p-3 text-center">
                         <Button
                           type="button"
-                          onClick={() => updateRec(r.id, { active: r.active === false ? true : false })}
                           style={{ background: "black", color: "white" }}
+                          onClick={() => updateRec(r.id, { active: r.active === false ? true : false })}
                         >
                           {r.active === false ? "Inactive" : "Active"}
                         </Button>
@@ -274,38 +279,45 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                     </tr>
                   );
                 })}
+
+                {list.length === 0 && (
+                  <tr className="border-t">
+                    <td className="p-6 text-zinc-400 text-center" colSpan={8}>
+                      {showInactive ? "No inactive recruiters." : "No active recruiters."}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         </CardContent>
       </Card>
 
-      {/* History modal 90% */}
-      <Dialog open={open} onOpenChange={setOpen}>
+      {/* History modal — newest first */}
+      <Dialog open={infoOpen} onOpenChange={setInfoOpen}>
         <DialogContent size="fill" className="p-4">
           <DialogHeader>
             <DialogTitle className="text-center">History</DialogTitle>
           </DialogHeader>
 
-          {sel && (
+          {infoRec && (
             <div className="grid gap-4">
-              {/* identity */}
+              {/* identity row */}
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <div className="text-xs text-zinc-500">Name</div>
-                  <Input value={sel.name || ""} readOnly />
+                  <Input value={infoRec.name || ""} readOnly />
                 </div>
                 <div>
                   <div className="text-xs text-zinc-500">Role</div>
-                  <Input value={sel.role || ""} readOnly />
+                  <Input value={infoRec.role || ""} readOnly />
                 </div>
                 <div>
                   <div className="text-xs text-zinc-500">Crewcode</div>
-                  <Input value={sel.crewCode || sel.crewcode || ""} readOnly />
+                  <Input value={infoRec.crewCode || infoRec.crewcode || ""} readOnly />
                 </div>
               </div>
 
-              {/* table */}
               <div className="border rounded-lg overflow-auto">
                 <table className="min-w-full text-sm">
                   <thead className="bg-zinc-50">
@@ -321,36 +333,40 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {shiftsForRecruiter(planRows, sel).map((s, i) => (
-                      <tr key={`${s.date}-${s.zone}-${i}`} className="border-t">
-                        <td className="p-2">{fmtDDMMYYYY(s.date)}</td>
-                        <td className="p-2">{s.zone}</td>
-                        <td className="p-2 text-center">
-                          <span
-                            className={
-                              Number(s.score) >= 3
-                                ? "inline-block rounded-full bg-green-100 px-2 py-1"
-                                : Number(s.score) >= 2
-                                ? "inline-block rounded-full bg-yellow-100 px-2 py-1"
-                                : "inline-block rounded-full bg-red-100 px-2 py-1"
-                            }
-                          >
-                            {Number(s.score || 0).toFixed(2)}
-                          </span>
-                        </td>
-                        <td className="p-2 text-center">{pct(s.box2)}</td>
-                        <td className="p-2 text-center">{pct(s.box2s)}</td>
-                        <td className="p-2 text-center">{pct(s.box4)}</td>
-                        <td className="p-2 text-center">{pct(s.box4s)}</td>
-                        <td className="p-2 text-right">{Number(s.game || 0).toFixed(2)}</td>
-                      </tr>
-                    ))}
+                    {/* planRows already newest→oldest; show in that order (newest on top) */}
+                    {shiftsForRecruiter(planRows, infoRec).map((s, i) => {
+                      const score = Number(s.score || 0);
+                      return (
+                        <tr key={`${s.date}-${s.zone}-${i}`} className="border-t">
+                          <td className="p-2">{fmtDDMMYYYY(s.date)}</td>
+                          <td className="p-2">{s.zone}</td>
+                          <td className="p-2 text-center">
+                            <span
+                              className={
+                                score >= 3
+                                  ? "inline-block rounded-full bg-green-100 px-2 py-1"
+                                  : score >= 2
+                                  ? "inline-block rounded-full bg-yellow-100 px-2 py-1"
+                                  : "inline-block rounded-full bg-red-100 px-2 py-1"
+                              }
+                            >
+                              {score.toFixed(2)}
+                            </span>
+                          </td>
+                          <td className="p-2 text-center">{pct(s.box2)}</td>
+                          <td className="p-2 text-center">{pct(s.box2s)}</td>
+                          <td className="p-2 text-center">{pct(s.box4)}</td>
+                          <td className="p-2 text-center">{pct(s.box4s)}</td>
+                          <td className="p-2 text-right">{Number(s.game || 0).toFixed(2)}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
 
               <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                <Button type="button" variant="outline" onClick={() => setInfoOpen(false)}>
                   Close
                 </Button>
               </DialogFooter>
