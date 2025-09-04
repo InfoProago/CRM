@@ -1,6 +1,6 @@
 // src/pages/Inflow.jsx — Proago CRM
 // v2025-09-04 • Calls column fixed width (48px) • Grid alignment across sections (even when empty)
-// • Robust Indeed import (arrays + single-object applicant) • Stage date/time memory (restore on move back)
+// • Robust Indeed import (arrays + single-object applicant + NDJSON + CSV) • Stage date/time memory (restore on move back)
 // • Local-edit cells (fix 1-char bug & time crash) • Editable Name • Compact Notify
 
 import React, { useMemo, useRef, useState } from "react";
@@ -326,6 +326,7 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
     </Dialog>
   );
 };
+
 // ---------- Main Component ----------
 export default function Inflow({ pipeline, setPipeline, onHire }) {
   const fileRef = useRef(null);
@@ -348,13 +349,13 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       if (!lead) return;
       if (!lead._stageMeta) lead._stageMeta = {};
 
-      // Save leaving stage state
+      // save leaving stage values
       lead._stageMeta[from] = { date: lead.date || "", time: lead.time || "" };
 
-      // Remove from source
+      // remove from source
       next[from] = cur.filter((x) => x.id !== item.id);
 
-      // Forward? then reset. Backward? restore prior.
+      // forward => reset; backward => restore
       const forward = (from === "leads" && to === "interview") || (from === "interview" && to === "formation");
       const prior = lead._stageMeta[to];
       const incoming = forward ? { date: "", time: "" } : { date: prior?.date || "", time: prior?.time || "" };
@@ -365,10 +366,8 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
   };
 
   const hireFromFormation = (item) => {
-    let code = prompt("Crewcode (5 digits):");
-    if (!code) return;
-    code = String(code).trim();
-    if (!/^\d{5}$/.test(code)) { alert("Crewcode must be exactly 5 digits."); return; }
+    let code = prompt("Crewcode (5 digits):"); if (!code) return;
+    code = String(code).trim(); if (!/^\d{5}$/.test(code)) { alert("Crewcode must be exactly 5 digits."); return; }
     onHire({ ...item, crewCode: code, role:"Rookie" });
     stableUpdate((next) => { next.formation = next.formation.filter((x) => x.id !== item.id); });
     addAuditLog({ area:"Inflow", action:"Hire", lead:{ id:item.id, name:item.name }, crewCode:code });
@@ -490,206 +489,221 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       alert("Import failed.");
     }
   };
-             {/* Rows */}
-            {pipeline[keyName].length === 0 ? (
-              <div className="grid-row row-border">
-                <div className="cell text-zinc-400 italic">No entries</div>
-                <div className="cell" />
-                <div className="cell" />
-                <div className="cell" />
-                <div className="cell" />
-                <div className="cell" />
-                <div className="cell" />
-                <div className="cell" />
-              </div>
-            ) : (
-              pipeline[keyName].map((x) => {
-                const stage = keyName;
-                const showBell =
-                  stage === "leads" ? (x.calls ?? 0) >= 3 : Boolean(x.date && x.time);
+  // Build notify content when opening
+  function openNotify(lead, stage) {
+    const base = TPL[stage === "interview" ? "interview" : stage === "formation" ? "formation" : "call"];
+    setNotifyLang("lb");
+    setNotifyText(compileTemplate(base.lb, lead));
+    setNotifyLead(lead);
+    setNotifyStage(stage);
+    setNotifyOpen(true);
+  }
 
-                return (
-                  <div key={x.id} className="grid-row row-border">
-                    {/* NAME */}
-                    <div className="cell font-medium">
-                      <EditableCell
-                        value={x.name}
-                        placeholder="Full name"
-                        onCommit={(val) =>
+  // Section as card with grid header + grid rows (alignment even when empty)
+  const Section = ({ title, keyName, prev, nextKey, showCalls, enableHireDown }) => (
+    <Card className="border-2">
+      <CardHeader>
+        <CardTitle className="flex justify-between items-center">
+          <span>{title}</span>
+          <Badge>{pipeline[keyName].length}</Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="border rounded-xl overflow-hidden">
+          {/* Header */}
+          <div className="grid-row header">
+            <div className="cell">Name</div>
+            <div className="cell">Mobile</div>
+            <div className="cell">Email</div>
+            <div className="cell cell-center">Source</div>
+            <div className="cell cell-center">Date</div>
+            <div className="cell cell-center">Time</div>
+            <div className="cell cell-center">{showCalls ? "Calls" : ""}</div>
+            <div className="cell cell-center">Actions</div>
+          </div>
+
+          {/* Rows */}
+          {pipeline[keyName].length === 0 ? (
+            <div className="grid-row row-border">
+              <div className="cell text-zinc-400 italic">No entries</div>
+              <div className="cell" />
+              <div className="cell" />
+              <div className="cell" />
+              <div className="cell" />
+              <div className="cell" />
+              <div className="cell" />
+              <div className="cell" />
+            </div>
+          ) : (
+            pipeline[keyName].map((x) => {
+              const stage = keyName;
+              const showBell = shouldShowBell(stage, x);
+
+              return (
+                <div key={x.id} className="grid-row row-border">
+                  {/* NAME */}
+                  <div className="cell font-medium">
+                    <EditableCell
+                      value={x.name}
+                      placeholder="Full name"
+                      onCommit={(val) =>
+                        stableUpdate((p) => {
+                          p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, name: val } : it));
+                        })
+                      }
+                    />
+                  </div>
+
+                  {/* MOBILE */}
+                  <div className="cell">
+                    <EditableCell
+                      value={x.phone || ""}
+                      placeholder="mobile number"
+                      onCommit={(val) =>
+                        stableUpdate((p) => {
+                          p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, phone: val } : it));
+                        })
+                      }
+                    />
+                  </div>
+
+                  {/* EMAIL */}
+                  <div className="cell">
+                    <EditableCell
+                      type="email"
+                      value={x.email || ""}
+                      placeholder="johndoe@gmail.com"
+                      onCommit={(val) =>
+                        stableUpdate((p) => {
+                          p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, email: val } : it));
+                        })
+                      }
+                    />
+                  </div>
+
+                  {/* SOURCE */}
+                  <div className="cell cell-center">{x.source}</div>
+
+                  {/* DATE */}
+                  <div className="cell">
+                    <EditableCell
+                      type="date"
+                      className="date-center"
+                      value={x.date || ""}
+                      onCommit={(val) =>
+                        stableUpdate((p) => {
+                          p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, date: val } : it));
+                        })
+                      }
+                    />
+                  </div>
+
+                  {/* TIME */}
+                  <div className="cell">
+                    <EditableCell
+                      type="time"
+                      className="time-center"
+                      value={x.time || ""}
+                      onCommit={(val) =>
+                        stableUpdate((p) => {
+                          p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, time: val } : it));
+                        })
+                      }
+                    />
+                  </div>
+
+                  {/* CALLS (fixed 48px track) */}
+                  <div className="cell cell-center">
+                    {showCalls ? (
+                      <Input
+                        inputMode="numeric"
+                        className="text-center w-12 mx-auto"
+                        value={String(x.calls ?? 0)}
+                        onChange={(e) => {
+                          const n = Math.max(0, Math.min(3, Number(String(e.target.value).replace(/\D/g, "")) || 0));
                           stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, name: val } : it
-                            );
-                          })
-                        }
+                            p[keyName] = p[keyName].map((it) => (it.id === x.id ? { ...it, calls: n } : it));
+                          });
+                        }}
                       />
-                    </div>
+                    ) : (
+                      <div className="w-12 mx-auto h-10" />
+                    )}
+                  </div>
 
-                    {/* MOBILE */}
-                    <div className="cell">
-                      <EditableCell
-                        value={x.phone || ""}
-                        placeholder="mobile number"
-                        onCommit={(val) =>
-                          stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, phone: val } : it
-                            );
-                          })
-                        }
-                      />
-                    </div>
-
-                    {/* EMAIL */}
-                    <div className="cell">
-                      <EditableCell
-                        type="email"
-                        value={x.email || ""}
-                        placeholder="johndoe@gmail.com"
-                        onCommit={(val) =>
-                          stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, email: val } : it
-                            );
-                          })
-                        }
-                      />
-                    </div>
-
-                    {/* SOURCE */}
-                    <div className="cell cell-center">{x.source}</div>
-
-                    {/* DATE */}
-                    <div className="cell">
-                      <EditableCell
-                        type="date"
-                        className="date-center"
-                        value={x.date || ""}
-                        onCommit={(val) =>
-                          stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, date: val } : it
-                            );
-                          })
-                        }
-                      />
-                    </div>
-
-                    {/* TIME */}
-                    <div className="cell">
-                      <EditableCell
-                        type="time"
-                        className="time-center"
-                        value={x.time || ""}
-                        onCommit={(val) =>
-                          stableUpdate((p) => {
-                            p[keyName] = p[keyName].map((it) =>
-                              it.id === x.id ? { ...it, time: val } : it
-                            );
-                          })
-                        }
-                      />
-                    </div>
-
-                    {/* CALLS (fixed 48px track) */}
-                    <div className="cell cell-center">
-                      {showCalls ? (
-                        <Input
-                          inputMode="numeric"
-                          className="text-center w-12 mx-auto"
-                          value={String(x.calls ?? 0)}
-                          onChange={(e) => {
-                            const n = Math.max(
-                              0,
-                              Math.min(3, Number(String(e.target.value).replace(/\D/g, "")) || 0)
-                            );
-                            stableUpdate((p) => {
-                              p[keyName] = p[keyName].map((it) =>
-                                it.id === x.id ? { ...it, calls: n } : it
-                              );
-                            });
-                          }}
-                        />
-                      ) : (
-                        <div className="w-12 mx-auto h-10" />
-                      )}
-                    </div>
-
-                    {/* ACTIONS */}
-                    <div className="cell">
-                      <div className="flex gap-2 justify-end items-center">
-                        {/* Bell */}
-                        <BtnSlot>
-                          {showBell && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              title="Notify"
-                              className="p-0"
-                              style={{ background: "black", color: "white", width: 36, height: 36 }}
-                              onClick={() => openNotify(x, stage)}
-                            >
-                              <Bell className="h-4 w-4" color="white" />
-                            </Button>
-                          )}
-                        </BtnSlot>
-
-                        {/* Up */}
-                        <BtnSlot>
-                          {prev && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              title="Back"
-                              className="p-0"
-                              style={{ width: 36, height: 36 }}
-                              onClick={() => move(x, keyName, prev)}
-                            >
-                              <ChevronUp className="h-4 w-4" />
-                            </Button>
-                          )}
-                        </BtnSlot>
-
-                        {/* Down / Hire */}
-                        <BtnSlot>
-                          {nextKey || enableHireDown ? (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              title={enableHireDown ? "Hire" : "Move"}
-                              className="p-0"
-                              style={{ width: 36, height: 36 }}
-                              onClick={() =>
-                                enableHireDown ? hireFromFormation(x) : move(x, keyName, nextKey)
-                              }
-                            >
-                              <ChevronDown className="h-4 w-4" />
-                            </Button>
-                          ) : null}
-                        </BtnSlot>
-
-                        {/* Trash */}
-                        <BtnSlot>
+                  {/* ACTIONS */}
+                  <div className="cell">
+                    <div className="flex gap-2 justify-end items-center">
+                      {/* Bell */}
+                      <BtnSlot>
+                        {showBell && (
                           <Button
                             type="button"
                             size="sm"
-                            variant="destructive"
+                            variant="outline"
+                            title="Notify"
                             className="p-0"
-                            style={{ width: 36, height: 36 }}
-                            onClick={() => del(x, keyName)}
+                            style={{ background: "black", color: "white", width: BTN_W, height: BTN_H }}
+                            onClick={() => openNotify(x, stage)}
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <Bell className="h-4 w-4" color="white" />
                           </Button>
-                        </BtnSlot>
-                      </div>
+                        )}
+                      </BtnSlot>
+
+                      {/* Up */}
+                      <BtnSlot>
+                        {prev && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            title="Back"
+                            className="p-0"
+                            style={{ width: BTN_W, height: BTN_H }}
+                            onClick={() => move(x, keyName, prev)}
+                          >
+                            <ChevronUp className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </BtnSlot>
+
+                      {/* Down / Hire */}
+                      <BtnSlot>
+                        {nextKey || enableHireDown ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            title={enableHireDown ? "Hire" : "Move"}
+                            className="p-0"
+                            style={{ width: BTN_W, height: BTN_H }}
+                            onClick={() => (enableHireDown ? hireFromFormation(x) : move(x, keyName, nextKey))}
+                          >
+                            <ChevronDown className="h-4 w-4" />
+                          </Button>
+                        ) : null}
+                      </BtnSlot>
+
+                      {/* Trash */}
+                      <BtnSlot>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="destructive"
+                          className="p-0"
+                          style={{ width: BTN_W, height: BTN_H }}
+                          onClick={() => del(x, keyName)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </BtnSlot>
                     </div>
                   </div>
-                );
-              })
-            )}
+                </div>
+              );
+            })
+          )}
         </div>
       </CardContent>
     </Card>
@@ -704,19 +718,10 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       <div className="flex justify-between items-center">
         <div />
         <div className="flex gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setAddOpen(true)}
-            style={{ background: "black", color: "white" }}
-          >
+          <Button type="button" variant="outline" onClick={() => setAddOpen(true)} style={{ background: "black", color: "white" }}>
             <Plus className="h-4 w-4 mr-1" /> Add
           </Button>
-          <Button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            style={{ background: "black", color: "white" }}
-          >
+          <Button type="button" onClick={() => fileRef.current?.click()} style={{ background: "black", color: "white" }}>
             <Upload className="h-4 w-4 mr-1" /> Import
           </Button>
           <input
@@ -757,12 +762,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                   onChange={(e) => {
                     const lang = e.target.value;
                     setNotifyLang(lang);
-                    const base =
-                      TPL[notifyStage === "interview"
-                        ? "interview"
-                        : notifyStage === "formation"
-                        ? "formation"
-                        : "call"];
+                    const base = TPL[notifyStage === "interview" ? "interview" : notifyStage === "formation" ? "formation" : "call"];
                     setNotifyText(compileTemplate(base[lang], notifyLead));
                   }}
                 >
@@ -781,9 +781,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
           )}
 
           <DialogFooter className="justify-center gap-2">
-            <Button type="button" variant="outline" onClick={() => setNotifyOpen(false)}>
-              Cancel
-            </Button>
+            <Button type="button" variant="outline" onClick={() => setNotifyOpen(false)}>Cancel</Button>
             <Button
               type="button"
               style={{ background: "black", color: "white" }}
