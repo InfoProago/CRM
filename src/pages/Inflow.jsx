@@ -210,12 +210,9 @@ function shouldShowBell(stage, lead) {
 // ---- Small local-edit cell that only commits onBlur/Enter (prevents 1-char bug & heavy reflows)
 function EditableCell({ value, onCommit, type = "text", placeholder, inputMode, className = "" }) {
   const [val, setVal] = useState(value ?? "");
-  // keep local in sync if external changes (moves/import etc.)
   React.useEffect(() => { setVal(value ?? ""); }, [value]);
-
   const commit = () => { if (val !== value) onCommit(val); };
   const onKeyDown = (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); e.currentTarget.blur(); } };
-
   return (
     <Input
       type={type}
@@ -251,7 +248,6 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
     if (email && !email.includes("@")) return alert("Email must contain '@'.");
 
     const now = new Date();
-    the:
     const lead = {
       id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
       name: nm,
@@ -789,7 +785,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         <DialogContent size="lg">
           <DialogHeader><DialogTitle className="text-center">Notify</DialogTitle></DialogHeader>
 
-          <div className="grid gap-3 place-items-center text-center">
+        <div className="grid gap-3 place-items-center text-center">
             {notifyLead && (
               <>
                 <div className="w-full max-w-xs">
