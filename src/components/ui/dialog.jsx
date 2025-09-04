@@ -1,27 +1,26 @@
 // src/components/ui/dialog.jsx — Proago CRM
 // v2025-09-04 • adds size="fill" (90vw x 90vh) but keeps sm|md|lg|xl for Inflow
+// Removed clsx dependency for compatibility
 
 import React from "react";
-import clsx from "clsx";
 
-/**
- * Minimal dialog primitives used across the app.
- * All dialogs share the same base, with flexible sizing.
- */
+function cx(...classes) {
+  return classes.filter(Boolean).join(" ");
+}
 
 export function Dialog({ open, onOpenChange, children }) {
   return (
     <div
       role="dialog-root"
       aria-hidden={!open}
-      className={clsx(
+      className={cx(
         "fixed inset-0 z-50",
         open ? "pointer-events-auto" : "pointer-events-none"
       )}
     >
       {/* Backdrop */}
       <div
-        className={clsx(
+        className={cx(
           "absolute inset-0 transition-opacity",
           open ? "bg-black/40 opacity-100" : "bg-black/0 opacity-0"
         )}
@@ -29,7 +28,7 @@ export function Dialog({ open, onOpenChange, children }) {
       />
       {/* Content portal */}
       <div
-        className={clsx(
+        className={cx(
           "absolute inset-0 flex items-center justify-center p-4",
           open ? "opacity-100" : "opacity-0"
         )}
@@ -41,23 +40,19 @@ export function Dialog({ open, onOpenChange, children }) {
 }
 
 export function DialogHeader({ children, className = "" }) {
-  return <div className={clsx("mb-3", className)}>{children}</div>;
+  return <div className={cx("mb-3", className)}>{children}</div>;
 }
 
 export function DialogFooter({ children, className = "" }) {
   return (
-    <div
-      className={clsx("mt-4 flex items-center justify-center gap-2", className)}
-    >
+    <div className={cx("mt-4 flex items-center justify-center gap-2", className)}>
       {children}
     </div>
   );
 }
 
 export function DialogTitle({ children, className = "" }) {
-  return (
-    <h3 className={clsx("text-lg font-semibold", className)}>{children}</h3>
-  );
+  return <h3 className={cx("text-lg font-semibold", className)}>{children}</h3>;
 }
 
 /**
@@ -83,7 +78,7 @@ export function DialogContent({
     fill: "!max-w-none !w-[90vw] !h-[90vh]",
   };
 
-  const outer = clsx(
+  const outer = cx(
     "relative bg-white rounded-xl shadow-xl border p-4 transition-transform outline-none",
     sizeClasses[size] || sizeClasses.md,
     className
