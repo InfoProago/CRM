@@ -1,5 +1,5 @@
 // src/pages/Recruiters.jsx — Proago CRM
-// v2025-09-04 • Robust Planning linkage (auto-discovery), live refresh, correct Form & History
+// 2025-09-04 • Robust Planning link + proper Box rules + UI tweaks
 
 import React, { useEffect, useMemo, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "../components/ui/card";
@@ -10,29 +10,37 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Info } from "lucide-react";
 import * as U from "../util.js";
 
-const { load, save, K, titleCase } = U;
+const { load, K, titleCase } = U;
 
-// ----------------- helpers -----------------
-
+// ---------- utilities ----------
 const ROLES = ["RK", "PR", "PC", "TC", "SM", "BM"];
-
 const dmy = (iso) => {
-  try { return new Date(iso).toLocaleDateString("en-GB"); }
-  catch { return iso || ""; }
+  try { return new Date(iso).toLocaleDateString("en-GB"); } catch { return iso || ""; }
 };
 const avg2 = (arr) => (arr?.length ? (arr.reduce((a,b)=>a+Number(b||0),0)/arr.length).toFixed(2) : "0.00");
 const pct = (n) => `${Number(n||0)}%`;
-const colorPct = (p, min) => (Number(p)>=min ? "text-green-600" : "text-red-500");
 
-// unify one day object into common shape
+const norm = (s) => String(s||"").toLowerCase().trim().replace(/\s+/g," ");
+const tokens = (s) => norm(s).split(" ").filter(Boolean);
+const nameSimilar = (a,b) => {
+  const ta = tokens(a), tb = tokens(b);
+  if (!ta.length || !tb.length) return false;
+  if (ta.join(" ") === tb.join(" ")) return true;
+  // allow containment of token sets (handles "Ronaldo" vs "Ronaldo Aveiro")
+  const setA = new Set(ta);
+  const setB = new Set(tb);
+  const hitA = ta.filter(t=>setB.has(t)).length;
+  const hitB = tb.filter(t=>setA.has(t)).length;
+  return hitA >= Math.min(ta.length, 2) || hitB >= Math.min(tb.length, 2);
+};
+
+// unify one day object into rows
 function normalizeDay(dayRaw) {
   const date = dayRaw?.date || dayRaw?.day || dayRaw?.id || "";
   const teams = dayRaw?.teams || dayRaw?.zones || [];
   const out = [];
   for (const t of teams) {
-    const zone =
-      (t?.zone && (t.zone.name || t.zone.label || t.zone)) ||
-      t?.label || t?.name || t?.zone || "";
+    const zone = (t?.zone && (t.zone.name || t.zone.label || t.zone)) || t?.label || t?.name || t?.zone || "";
     const list = t?.recruiters || t?.members || t?.staff || [];
     for (const r of list) {
       out.push({
@@ -52,113 +60,105 @@ function normalizeDay(dayRaw) {
   return out;
 }
 
-// try to read planning from many places
-function readPlanningDaysFlexible() {
-  // 1) Official keys we expect
-  const candidates = [];
-  const a = load(K.planning);         if (Array.isArray(a)) candidates.push(a);
-  const b = load(K.planningDays);     if (Array.isArray(b)) candidates.push(b);
-  const c = load("planning");         if (Array.isArray(c)) candidates.push(c);
-  const d = load("Planning");         if (Array.isArray(d)) candidates.push(d);
+function readPlanningCandidates() {
+  const arrs = [];
+  const pushIfArr = (x) => { if (Array.isArray(x) && x.length) arrs.push(x); };
 
-  // 2) Globals optionally exposed by Planning.jsx
-  if (Array.isArray(window?.__ProagoPlanning))      candidates.push(window.__ProagoPlanning);
-  if (Array.isArray(window?.__ProagoPlanningDays))  candidates.push(window.__ProagoPlanningDays);
+  pushIfArr(load(K.planning));
+  pushIfArr(load(K.planningDays));
+  pushIfArr(load("planning"));
+  pushIfArr(load("Planning"));
 
-  // 3) Heuristic scan of localStorage (last resort, tolerant)
+  // optional globals if Planning exposes them
+  pushIfArr(window?.__ProagoPlanning);
+  pushIfArr(window?.__ProagoPlanningDays);
+
+  // scan localStorage heuristically
   try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (!k) continue;
-      // skip obvious non-json
-      if (/theme|token|auth|font/i.test(k)) continue;
-      const raw = localStorage.getItem(k);
+    for (let i=0;i<localStorage.length;i++){
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (/theme|token|auth|font/i.test(key)) continue;
+      const raw = localStorage.getItem(key);
       if (!raw) continue;
       try {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length && (parsed[0]?.date || parsed[0]?.teams || parsed[0]?.zones)) {
-          candidates.push(parsed);
-        }
-      } catch { /* ignore */ }
+        const js = JSON.parse(raw);
+        if (Array.isArray(js) && js.length && (js[0]?.date || js[0]?.teams || js[0]?.zones)) pushIfArr(js);
+      } catch {}
     }
-  } catch { /* SSR / sandbox */ }
-
-  // choose the most recent-looking array (by date field)
-  let best = [];
-  for (const list of candidates) {
-    const score =
-      Array.isArray(list) && list.length
-        ? (list[0]?.date || list[0]?.day || list[0]?.id || "")
-        : "";
-    if ((list?.length || 0) > (best?.length || 0)) best = list;
-    if (String(score).length >= 8 && (list?.length || 0) >= (best?.length || 0)) best = list;
-  }
-  return Array.isArray(best) ? best : [];
+  } catch {}
+  return arrs;
 }
 
 function readAllShifts() {
-  const days = readPlanningDaysFlexible();
+  const cands = readPlanningCandidates();
+  let best = [];
+  for (const c of cands) if ((c?.length||0) > (best?.length||0)) best = c;
   const rows = [];
-  for (const day of days) rows.push(...normalizeDay(day));
-  // newest first by ISO date
-  rows.sort((a,b) => String(b.date||"").localeCompare(String(a.date||"")));
+  for (const day of best) rows.push(...normalizeDay(day));
+  rows.sort((a,b)=>String(b.date||"").localeCompare(String(a.date||""))); // newest first
   return rows;
 }
 
 function shiftsForRecruiter(rows, rec) {
-  const nm = (rec?.name || "").trim().toLowerCase();
+  const nm = rec?.name || "";
   const cc = String(rec?.crewCode || rec?.crewcode || "").trim();
-  return rows.filter((s) => {
-    const nameMatch = (s.name || "").trim().toLowerCase() === nm;
-    if (!cc) return nameMatch;
-    // when both have crewcode, require both match; else fallback to name
-    return s.crewCode ? (nameMatch && String(s.crewCode).trim() === cc) : nameMatch;
+  return rows.filter((s)=>{
+    if (cc && s.crewCode) return String(s.crewCode).trim() === cc;
+    return nameSimilar(s.name, nm);
   });
 }
 
-function last5Ints(rows, rec) {
-  return shiftsForRecruiter(rows, rec).slice(0,5).map((s)=>Math.round(Number(s.score||0)));
+function last5Form(rows, rec) {
+  return shiftsForRecruiter(rows, rec).slice(0,5).map(s=>Math.round(Number(s.score||0)));
 }
 
-// ----------------- main -----------------
-
+// ---------- component ----------
 export default function Recruiters({ recruiters = [], setRecruiters }) {
   const [showInactive, setShowInactive] = useState(false);
-
-  // live planning cache + refresh when planning changes in another tab
   const [planRows, setPlanRows] = useState(() => readAllShifts());
+
+  // strong auto-refresh
   useEffect(() => {
     const refresh = () => setPlanRows(readAllShifts());
     window.addEventListener("storage", refresh);
-    // lightweight polling to catch same-tab edits if Planning saves without storage event
-    const id = setInterval(refresh, 1500);
-    return () => { window.removeEventListener("storage", refresh); clearInterval(id); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const id = setInterval(refresh, 1000);
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      clearInterval(id);
+    };
   }, []);
 
-  const viewed = (showInactive ? recruiters.filter(r=>r.active===false) : recruiters.filter(r=>r.active!==false));
+  const list = useMemo(() => (showInactive ? recruiters.filter(r=>r.active===false) : recruiters.filter(r=>r.active!==false)), [recruiters, showInactive]);
+
+  const updateRec = (id, patch) => setRecruiters((prev)=>prev.map(r=>r.id===id ? {...r, ...patch} : r));
 
   const [infoOpen, setInfoOpen] = useState(false);
   const [infoRec, setInfoRec] = useState(null);
-
   const openHistory = (r) => { setInfoRec(r); setInfoOpen(true); };
-
-  const updateRec = (id, patch) => {
-    setRecruiters((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  };
 
   return (
     <div className="grid gap-4">
-      {/* Header filter buttons like Inflow */}
-      <div className="flex justify-end gap-2">
-        <Button type="button" onClick={()=>setShowInactive(false)} style={{background:"black",color:"white"}}>Active</Button>
-        <Button type="button" variant="outline" onClick={()=>setShowInactive(true)} style={{background:showInactive?"black":"white",color:showInactive?"white":"black"}}>Inactive</Button>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex gap-2">
+          <Button type="button" onClick={()=>setPlanRows(readAllShifts())} style={{background:"black",color:"white"}}>Refresh</Button>
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" onClick={()=>setShowInactive(false)} style={{background:"black",color:"white"}}>Active</Button>
+          <Button type="button" variant="outline" onClick={()=>setShowInactive(true)} style={{background:showInactive?"black":"white",color:showInactive?"white":"black"}}>Inactive</Button>
+        </div>
       </div>
 
       <Card className="border-2">
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
             <span>Recruiters</span>
-            <Badge>{viewed.length}</Badge>
+            <Badge>{list.length}</Badge>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -168,7 +168,7 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                 <col style={{width:"22%"}} /> {/* Name */}
                 <col style={{width:"12%"}} /> {/* Crewcode */}
                 <col style={{width:"10%"}} /> {/* Role */}
-                <col style={{width:"18%"}} /> {/* Form (centered between Role & Average) */}
+                <col style={{width:"18%"}} /> {/* Form */}
                 <col style={{width:"10%"}} /> {/* Average */}
                 <col style={{width:"10%"}} /> {/* Box 2 */}
                 <col style={{width:"10%"}} /> {/* Box 4 */}
@@ -189,13 +189,20 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                 </tr>
               </thead>
               <tbody>
-                {viewed.map((r) => {
+                {list.map((r) => {
                   const shifts = shiftsForRecruiter(planRows, r);
-                  const form = last5Ints(planRows, r);
+                  const form = last5Form(planRows, r);
                   const avg = avg2(shifts.map(s=>Number(s.score||0)));
                   const last = shifts[0] || {};
-                  const b2 = Number(last.box2||0);
-                  const b4 = Number(last.box4||0);
+                  const score = Number(last.score||0);
+                  const b2T = Number(last.box2||0) + Number(last.box2s||0);
+                  const b4T = Number(last.box4||0) + Number(last.box4s||0);
+
+                  const badB2 = b2T > score;
+                  const badB4 = b4T > b2T; // <-- correct rule
+
+                  const b2Class = badB2 ? "text-red-500" : (b2T>=70 ? "text-green-600" : "text-red-500");
+                  const b4Class = badB4 ? "text-red-500" : (b4T>=40 ? "text-green-600" : "text-red-500");
 
                   return (
                     <tr key={r.id} className="border-t">
@@ -219,10 +226,10 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                       <td className="p-3 text-center">
                         <span className="inline-block rounded-full bg-green-100 px-2 py-1">{avg}</span>
                       </td>
-                      {/* Box 2 */}
-                      <td className="p-3 text-center"><span className={colorPct(b2,70)}>{pct(b2)}</span></td>
-                      {/* Box 4 */}
-                      <td className="p-3 text-center"><span className={colorPct(b4,40)}>{pct(b4)}</span></td>
+                      {/* Box 2 (total) */}
+                      <td className="p-3 text-center"><span className={b2Class}>{pct(b2T)}</span></td>
+                      {/* Box 4 (total) */}
+                      <td className="p-3 text-center"><span className={b4Class}>{pct(b4T)}</span></td>
                       {/* Info */}
                       <td className="p-3 text-center">
                         <Button type="button" variant="outline" className="border-black" onClick={()=>openHistory(r)} title="History">
@@ -253,7 +260,7 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
 
           {infoRec && (
             <div className="grid gap-4">
-              {/* identity row */}
+              {/* ID row */}
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <div className="text-xs text-zinc-500">Name</div>
@@ -269,7 +276,6 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                 </div>
               </div>
 
-              {/* table */}
               <div className="border rounded-lg overflow-auto">
                 <table className="min-w-full text-sm">
                   <thead className="bg-zinc-50">
@@ -285,26 +291,37 @@ export default function Recruiters({ recruiters = [], setRecruiters }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {shiftsForRecruiter(planRows, infoRec).map((s,i)=>(
-                      <tr key={`${s.date}-${s.zone}-${i}`} className="border-t">
-                        <td className="p-2">{dmy(s.date)}</td>
-                        <td className="p-2">{s.zone}</td>
-                        <td className="p-2 text-center">
-                          <span className={
-                            Number(s.score)>=4 ? "inline-block rounded-full bg-green-100 px-2 py-1" :
-                            Number(s.score)>=3 ? "inline-block rounded-full bg-yellow-100 px-2 py-1" :
-                            "inline-block rounded-full bg-red-100 px-2 py-1"
-                          }>
-                            {Number(s.score||0).toFixed(2)}
-                          </span>
-                        </td>
-                        <td className="p-2 text-center">{pct(s.box2)}</td>
-                        <td className="p-2 text-center">{pct(s.box2s)}</td>
-                        <td className="p-2 text-center">{pct(s.box4)}</td>
-                        <td className="p-2 text-center">{pct(s.box4s)}</td>
-                        <td className="p-2 text-right">{Number(s.game||0).toFixed(2)}</td>
-                      </tr>
-                    ))}
+                    {shiftsForRecruiter(planRows, infoRec).map((s,i)=>{
+                      const score = Number(s.score||0);
+                      const b2T = Number(s.box2||0)+Number(s.box2s||0);
+                      const b4T = Number(s.box4||0)+Number(s.box4s||0);
+                      const badB2 = b2T>score;
+                      const badB4 = b4T>b2T;
+
+                      const b2Class = badB2 ? "text-red-500" : (b2T>=70 ? "text-green-600" : "text-red-500");
+                      const b4Class = badB4 ? "text-red-500" : (b4T>=40 ? "text-green-600" : "text-red-500");
+
+                      return (
+                        <tr key={`${s.date}-${s.zone}-${i}`} className="border-t">
+                          <td className="p-2">{dmy(s.date)}</td>
+                          <td className="p-2">{s.zone}</td>
+                          <td className="p-2 text-center">
+                            <span className={
+                              score>=4 ? "inline-block rounded-full bg-green-100 px-2 py-1" :
+                              score>=3 ? "inline-block rounded-full bg-yellow-100 px-2 py-1" :
+                              "inline-block rounded-full bg-red-100 px-2 py-1"
+                            }>
+                              {score.toFixed(2)}
+                            </span>
+                          </td>
+                          <td className={`p-2 text-center ${b2Class}`}>{pct(s.box2)}</td>
+                          <td className={`p-2 text-center ${b2Class}`}>{pct(s.box2s)}</td>
+                          <td className={`p-2 text-center ${b4Class}`}>{pct(s.box4)}</td>
+                          <td className={`p-2 text-center ${b4Class}`}>{pct(s.box4s)}</td>
+                          <td className="p-2 text-right">{Number(s.game||0).toFixed(2)}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
